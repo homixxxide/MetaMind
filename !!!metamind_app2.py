@@ -1487,6 +1487,18 @@ class HeroSearchFrame(QWidget):
 
         layout.addLayout(info_button_layout)
 
+        self.suggestions_frame = QFrame()
+        self.suggestions_frame.setObjectName("SuggestionsFrame")
+        self.suggestions_frame.setStyleSheet(f"""
+            QFrame#SuggestionsFrame {{
+                border: 1px solid {COLOR_ACCENT};
+                border-radius: 4px;
+            }}
+        """)
+        suggestions_layout = QVBoxLayout(self.suggestions_frame)
+        suggestions_layout.setContentsMargins(0, 0, 0, 0)
+        suggestions_layout.setSpacing(0)
+
         self.suggestions_list = QListWidget()
         self.suggestions_list.setVisible(False)
         self.suggestions_list.setFixedHeight(150)
@@ -1496,7 +1508,8 @@ class HeroSearchFrame(QWidget):
         self.suggestions_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.suggestions_list.setVerticalScrollMode(QAbstractItemView.ScrollPerItem)
         self.suggestions_list.itemClicked.connect(self.select_hero_from_list)
-        layout.addWidget(self.suggestions_list)
+        suggestions_layout.addWidget(self.suggestions_list)
+        layout.addWidget(self.suggestions_frame)
 
         layout.addItem(QSpacerItem(20, 15, QSizePolicy.Minimum, QSizePolicy.Fixed))
 
@@ -4081,7 +4094,7 @@ class MainWindow(QMainWindow):
 
             QListWidget {{
                 background-color: {COLOR_GLASS_MEDIUM};
-                border: 1px solid {COLOR_ACCENT};
+                border: none;
                 border-radius: 4px;
                 color: {COLOR_TEXT_WHITE};
                 font-size: 13px;
