@@ -25,6 +25,7 @@ import time
 import threading
 import requests
 import certifi
+import uuid
 from io import BytesIO
 import ctypes
 
@@ -253,6 +254,7 @@ def start_gsi_server():
 # ================= КОНФИГУРАЦИЯ ПРИЛОЖЕНИЯ =================
 
 APP_VERSION = "6.3"
+APP_TITLE = "MetaMind PRO"
 CACHE_UPDATE_HOURS = 24
 APP_DATA_FOLDER = "MetaMind"
 
@@ -264,8 +266,14 @@ AM_COUNTERS_FILE = "antimage_counters.json"
 OPENDOTA_CACHE_FILE = "opendota_cache.json"
 OPENDOTA_CACHE_META_FILE = "opendota_cache_meta.json"
 VERSION_FILE = "last_version.txt"
+PRO_PROFILE_FILE = "pro_profile.json"
+PRO_LICENSE_FILE = "pro_license.json"
+HERO_TAGS_FILE = "hero_tags.json"
+HERO_SYNERGIES_FILE = "hero_synergies.json"
+HERO_COUNTERS_FILE = "hero_counters.json"
 
 MAX_ENEMIES = 5
+MAX_ALLIES = 5
 AM_SLUG = "anti-mage"
 
 BACKGROUND_IMAGE_FILE = "background.jpg"
@@ -804,6 +812,18 @@ def get_app_data_path() -> str:
     return app_folder
 
 
+def load_appdata_json(filename: str, default=None):
+    full_path = os.path.join(get_app_data_path(), filename)
+    if not os.path.exists(full_path):
+        return default if default is not None else {}
+    try:
+        with open(full_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Ошибка чтения JSON из {full_path}: {e}")
+        return default if default is not None else {}
+
+
 def get_bundled_cache_path() -> str:
     return resource_path(OPENDOTA_CACHE_FILE)
 
@@ -1060,6 +1080,196 @@ def refresh_opendota_cache_background() -> None:
                 mark_cache("static", note="background-fallback")
 
     threading.Thread(target=worker, daemon=True).start()
+
+
+# ================= MetaMind PRO: данные и анализ =================
+
+ROLE_TAG_MAP = {
+    "Carry": ["damage", "late", "physical"],
+    "Mider": ["magic", "burst", "initiation", "early"],
+    "Offlaner": ["frontline", "initiation", "disable", "early"],
+    "Support": ["save", "disable", "vision", "early"],
+    "Hard Support": ["save", "disable", "vision", "early"],
+}
+
+
+class PlayerProfileManager:
+    def __init__(self):
+        self.profile = load_appdata_json(PRO_PROFILE_FILE, default={})
+
+    def get_profile(self):
+        return {
+            "role": self.profile.get("role", "Carry"),
+            "playstyle": self.profile.get("playstyle", "Сбалансированный"),
+        }
+
+    def update_profile(self, role: str, playstyle: str):
+        self.profile["role"] = role
+        self.profile["playstyle"] = playstyle
+        save_json_file(PRO_PROFILE_FILE, self.profile)
+
+
+class LicenseManager:
+    def __init__(self):
+        self.data = load_appdata_json(PRO_LICENSE_FILE, default={})
+
+    def _hwid(self):
+        try:
+            return str(uuid.getnode())
+        except Exception:
+            return "unknown"
+
+    def activate(self, key: str) -> tuple[bool, str]:
+        key = key.strip()
+        if len(key) < 8:
+            return False, "Ключ слишком короткий"
+        self.data = {
+            "key": key,
+            "hwid": self._hwid(),
+            "activated_at": int(time.time()),
+            "last_check": int(time.time()),
+        }
+        save_json_file(PRO_LICENSE_FILE, self.data)
+        return True, "Лицензия активирована"
+
+    def status(self) -> tuple[bool, str]:
+        key = self.data.get("key")
+        if not key:
+            return False, "Лицензия не активирована"
+        if self.data.get("hwid") != self._hwid():
+            return False, "Лицензия не для этого устройства"
+        return True, "PRO активирован"
+
+
+class MetaDataProvider:
+    def __init__(self):
+        self.cache = load_opendota_cache(prefer_appdata=True) or get_static_fallback()
+        self.hero_tags = load_json_file(HERO_TAGS_FILE) or {}
+
+    def _find_stat(self, hero_slug: str):
+        if not self.cache:
+            return None
+        for hero in self.cache:
+            slug = (hero.get("name") or "").replace("npc_dota_hero_", "")
+            if slug == hero_slug:
+                return hero
+        return None
+
+    def get_winrate(self, hero_slug: str) -> float:
+        stat = self._find_stat(hero_slug)
+        if not stat:
+            return 0.0
+        for pick_key, win_key in (("pro_pick", "pro_win"), ("1_pick", "1_win")):
+            picks = stat.get(pick_key, 0) or 0
+            wins = stat.get(win_key, 0) or 0
+            if picks > 0:
+                return (wins / picks) * 100.0
+        return 0.0
+
+    def get_tags(self, hero_slug: str, role: str | None = None):
+        tags = set(self.hero_tags.get(hero_slug, []))
+        if role:
+            tags.update(ROLE_TAG_MAP.get(role, []))
+        return tags
+
+
+class ContextFlagsEngine:
+    def analyze(self, ally_tags: set, enemy_tags: set) -> list[str]:
+        flags = []
+        if "push" not in ally_tags:
+            flags.append("Не хватает пуш-потенциала (сложно ломать вышки).")
+        if "save" not in ally_tags:
+            flags.append("Нет сейва для ключевых героев.")
+        if "frontline" not in ally_tags:
+            flags.append("Нет фронтлайна — некому принимать урон.")
+        if "initiation" not in ally_tags:
+            flags.append("Мало инициации — сложно начинать драки.")
+        if "disable" not in ally_tags and "silence" not in ally_tags:
+            flags.append("Недостаточно контроля (станы/сайленсы).")
+
+        if "late" not in ally_tags:
+            flags.append("Слабый лейт-потенциал.")
+        if "early" not in ally_tags:
+            flags.append("Слабая игра до 20 минуты.")
+
+        magic = "magic" in ally_tags
+        physical = "physical" in ally_tags
+        if magic and not physical:
+            flags.append("Перекос урона в магию.")
+        if physical and not magic:
+            flags.append("Перекос урона в физику.")
+        if not flags:
+            flags.append("Драфт выглядит сбалансированным.")
+        return flags
+
+
+class DraftAnalyzer:
+    def __init__(self, meta_provider: MetaDataProvider):
+        self.meta_provider = meta_provider
+        self.flags_engine = ContextFlagsEngine()
+
+    def build_tags(self, heroes: list[str], role_hint: str | None = None) -> set:
+        tags = set()
+        for hero in heroes:
+            hero_role = role_hint
+            for role, heroes_list in HERO_ROLES.items():
+                if hero in heroes_list:
+                    hero_role = role
+                    break
+            tags.update(self.meta_provider.get_tags(hero, hero_role))
+        return tags
+
+    def analyze(self, allies: list[str], enemies: list[str]) -> dict:
+        ally_tags = self.build_tags(allies)
+        enemy_tags = self.build_tags(enemies)
+        flags = self.flags_engine.analyze(ally_tags, enemy_tags)
+        return {
+            "ally_tags": ally_tags,
+            "enemy_tags": enemy_tags,
+            "flags": flags,
+        }
+
+
+class RecommendationEngine:
+    def __init__(self, meta_provider: MetaDataProvider):
+        self.meta_provider = meta_provider
+
+    def recommend(self, role: str, allies: list[str], enemies: list[str], flags: list[str]) -> list[dict]:
+        candidates = HERO_ROLES.get(role, [])
+        blocked = set(allies + enemies)
+        needs = set()
+        if any("фронтлайна" in f for f in flags):
+            needs.add("frontline")
+        if any("инициации" in f for f in flags):
+            needs.add("initiation")
+        if any("контроля" in f for f in flags):
+            needs.add("disable")
+        if any("пуш" in f for f in flags):
+            needs.add("push")
+
+        results = []
+        for hero in candidates:
+            if hero in blocked:
+                continue
+            score = self.meta_provider.get_winrate(hero)
+            hero_tags = self.meta_provider.get_tags(hero, role)
+            bonus = len(needs.intersection(hero_tags)) * 3.5
+            score += bonus
+            reasons = []
+            if bonus > 0:
+                reasons.append("закрывает слабости драфта")
+            if "late" in hero_tags:
+                reasons.append("хорош в лейте")
+            if "early" in hero_tags:
+                reasons.append("силён в ранней игре")
+            results.append({
+                "hero": hero,
+                "score": score,
+                "reason": ", ".join(reasons) or "стабилен по мете",
+            })
+
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:5]
 
 
 # ================= UI: What's New =================
@@ -1570,6 +1780,78 @@ class HeroSearchFrame(QWidget):
 
     def update_status(self, count):
         self.status_label.setText(f"Выбрано врагов: [{count}/{MAX_ENEMIES}]")
+
+
+# ================= UI: PRO Hero Search =================
+class ProHeroSearchFrame(QFrame):
+    def __init__(self, title: str, all_heroes: list[str], on_select_callback, parent=None):
+        super().__init__(parent)
+        self.all_heroes = all_heroes
+        self.on_select_callback = on_select_callback
+        self.current_matches = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        lbl = QLabel(title)
+        lbl.setObjectName("TitleLabel")
+        layout.addWidget(lbl)
+
+        self.entry = QLineEdit()
+        self.entry.setPlaceholderText("ИМЯ ГЕРОЯ...")
+        self.entry.textChanged.connect(self.on_key_release)
+        self.entry.returnPressed.connect(self.on_enter_pressed)
+        layout.addWidget(self.entry)
+
+        self.suggestions_list = QListWidget()
+        self.suggestions_list.setVisible(False)
+        self.suggestions_list.setMaximumHeight(180)
+        self.suggestions_list.itemClicked.connect(self.select_hero_from_list)
+        layout.addWidget(self.suggestions_list)
+
+    def on_key_release(self, query):
+        query = query.lower()
+        self.suggestions_list.clear()
+        self.current_matches = []
+
+        if not query:
+            self.suggestions_list.setVisible(False)
+            return
+
+        matches = []
+        for hero_slug in self.all_heroes:
+            clean_name = hero_slug.replace("-", " ")
+            if query in clean_name or query in hero_slug:
+                matches.append(hero_slug)
+
+        matches.sort(key=lambda x: x.startswith(query), reverse=True)
+        self.current_matches = matches[:10]
+
+        if self.current_matches:
+            for hero_slug in self.current_matches:
+                display_name = hero_slug.replace("-", " ").title()
+                item = QListWidgetItem(display_name)
+                item.setData(Qt.UserRole, hero_slug)
+                self.suggestions_list.addItem(item)
+            self.suggestions_list.setVisible(True)
+        else:
+            self.suggestions_list.setVisible(False)
+
+    def on_enter_pressed(self):
+        if len(self.current_matches) == 1:
+            hero_slug = self.current_matches[0]
+            self.entry.clear()
+            self.suggestions_list.setVisible(False)
+            self.current_matches = []
+            self.on_select_callback(hero_slug)
+
+    def select_hero_from_list(self, item):
+        hero_slug = item.data(Qt.UserRole)
+        self.entry.clear()
+        self.suggestions_list.setVisible(False)
+        self.current_matches = []
+        self.on_select_callback(hero_slug)
 
 
 # ================= UI: FloatingIcon =================
@@ -2348,7 +2630,7 @@ class MainWindow(QMainWindow):
         self._signals.done.connect(self._on_cache_refresh_done)
         self._refresh_in_progress = False
 
-        self.setWindowTitle("MetaMind")
+        self.setWindowTitle(APP_TITLE)
         self.setGeometry(100, 100, 1200, 850)
         self.setMinimumSize(800, 600)
         self.setWindowFlags(Qt.FramelessWindowHint)
@@ -2367,9 +2649,15 @@ class MainWindow(QMainWindow):
         self.hero_data, self.am_counters_data = self.load_data()
         self.all_heroes = sorted(list(self.hero_data.keys()))
         self.selected_enemies = []
+        self.selected_allies = []
         self.selected_role = None
 
         self.opendota_cache = None
+        self.profile_manager = PlayerProfileManager()
+        self.license_manager = LicenseManager()
+        self.meta_provider = MetaDataProvider()
+        self.draft_analyzer = DraftAnalyzer(self.meta_provider)
+        self.recommendation_engine = RecommendationEngine(self.meta_provider)
 
         self.animated_results = []
         self.animation_timer = QTimer(self)
@@ -2430,7 +2718,7 @@ class MainWindow(QMainWindow):
 
         logo_layout.addWidget(self.logo_icon)
 
-        self.logo_label = QLabel("MetaMind")
+        self.logo_label = QLabel(APP_TITLE)
         self.logo_label.setObjectName("LogoText")
         logo_layout.addWidget(self.logo_label)
 
@@ -2483,6 +2771,14 @@ class MainWindow(QMainWindow):
         btn2.setCursor(Qt.PointingHandCursor)
         btn2.clicked.connect(lambda: self.set_page(1))
         sidebar_layout.addWidget(btn2)
+
+        btn3 = QPushButton("PRO Анализ")
+        btn3.setObjectName("SidebarButton")
+        btn3.setMinimumHeight(60)
+        btn3.setMinimumWidth(200)
+        btn3.setCursor(Qt.PointingHandCursor)
+        btn3.clicked.connect(lambda: self.set_page(2))
+        sidebar_layout.addWidget(btn3)
 
         sidebar_layout.addStretch(1)
 
@@ -2785,6 +3081,172 @@ class MainWindow(QMainWindow):
 
         self.stack.addWidget(picker_frame)
 
+        # === Page 3 (PRO) ===
+        pro_frame = QFrame()
+        pro_frame.setObjectName("ProFrame")
+        pro_layout = QVBoxLayout(pro_frame)
+        pro_layout.setContentsMargins(30, 40, 30, 40)
+        pro_layout.setSpacing(20)
+
+        pro_header = QLabel("MetaMind PRO — Анализ драфта")
+        pro_header.setStyleSheet(f"color: {COLOR_TEXT_WHITE}; font-size: 20px; font-weight: bold;")
+        pro_layout.addWidget(pro_header)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(15)
+
+        profile_card = QFrame()
+        profile_card.setProperty("class", "Card")
+        profile_layout = QVBoxLayout(profile_card)
+        profile_layout.setContentsMargins(20, 20, 20, 20)
+        profile_layout.setSpacing(12)
+
+        profile_title = QLabel("Профиль игрока")
+        profile_title.setObjectName("TitleLabel")
+        profile_layout.addWidget(profile_title)
+
+        role_row = QHBoxLayout()
+        role_label = QLabel("Роль:")
+        self.profile_role_combo = QComboBox()
+        self.profile_role_combo.addItems(list(HERO_ROLES.keys()))
+        role_row.addWidget(role_label)
+        role_row.addWidget(self.profile_role_combo, stretch=1)
+        profile_layout.addLayout(role_row)
+
+        playstyle_row = QHBoxLayout()
+        playstyle_label = QLabel("Стиль:")
+        self.profile_playstyle_combo = QComboBox()
+        self.profile_playstyle_combo.addItems([
+            "Сбалансированный",
+            "Агрессивный",
+            "Сейвовый",
+            "Фарм-ориентированный",
+        ])
+        playstyle_row.addWidget(playstyle_label)
+        playstyle_row.addWidget(self.profile_playstyle_combo, stretch=1)
+        profile_layout.addLayout(playstyle_row)
+
+        top_row.addWidget(profile_card, stretch=1)
+
+        license_card = QFrame()
+        license_card.setProperty("class", "Card")
+        license_layout = QVBoxLayout(license_card)
+        license_layout.setContentsMargins(20, 20, 20, 20)
+        license_layout.setSpacing(12)
+
+        license_title = QLabel("Лицензия PRO")
+        license_title.setObjectName("TitleLabel")
+        license_layout.addWidget(license_title)
+
+        self.license_status_label = QLabel("")
+        self.license_status_label.setStyleSheet(f"color: {COLOR_TEXT_GRAY}; font-size: 13px;")
+        license_layout.addWidget(self.license_status_label)
+
+        license_row = QHBoxLayout()
+        self.license_input = QLineEdit()
+        self.license_input.setPlaceholderText("Введите ключ активации")
+        self.license_activate_btn = QPushButton("Активировать")
+        self.license_activate_btn.clicked.connect(self._activate_license)
+        license_row.addWidget(self.license_input, stretch=1)
+        license_row.addWidget(self.license_activate_btn)
+        license_layout.addLayout(license_row)
+
+        top_row.addWidget(license_card, stretch=1)
+
+        pro_layout.addLayout(top_row)
+
+        picks_row = QHBoxLayout()
+        picks_row.setSpacing(15)
+
+        ally_card = QFrame()
+        ally_card.setProperty("class", "Card")
+        ally_layout = QVBoxLayout(ally_card)
+        ally_layout.setContentsMargins(20, 20, 20, 20)
+        ally_layout.setSpacing(12)
+
+        ally_title = QLabel("Ваши герои")
+        ally_title.setObjectName("TitleLabel")
+        ally_layout.addWidget(ally_title)
+
+        self.pro_ally_search = ProHeroSearchFrame("Добавить героя", self.all_heroes, self.add_ally, self)
+        ally_layout.addWidget(self.pro_ally_search)
+
+        self.allies_list_container = QWidget()
+        self.allies_list_layout = QHBoxLayout(self.allies_list_container)
+        self.allies_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.allies_list_layout.setSpacing(10)
+        self.allies_list_layout.addStretch(1)
+        ally_layout.addWidget(self.allies_list_container)
+
+        picks_row.addWidget(ally_card, stretch=1)
+
+        enemy_card = QFrame()
+        enemy_card.setProperty("class", "Card")
+        enemy_layout = QVBoxLayout(enemy_card)
+        enemy_layout.setContentsMargins(20, 20, 20, 20)
+        enemy_layout.setSpacing(12)
+
+        enemy_title = QLabel("Герои противника")
+        enemy_title.setObjectName("TitleLabel")
+        enemy_layout.addWidget(enemy_title)
+
+        self.enemy_summary_label = QLabel("Пока нет данных")
+        self.enemy_summary_label.setStyleSheet(f"color: {COLOR_TEXT_GRAY}; font-size: 13px;")
+        enemy_layout.addWidget(self.enemy_summary_label)
+
+        picks_row.addWidget(enemy_card, stretch=1)
+        pro_layout.addLayout(picks_row)
+
+        analysis_row = QHBoxLayout()
+        analysis_row.setSpacing(15)
+
+        draft_card = QFrame()
+        draft_card.setProperty("class", "Card")
+        draft_layout = QVBoxLayout(draft_card)
+        draft_layout.setContentsMargins(20, 20, 20, 20)
+        draft_layout.setSpacing(12)
+        draft_title = QLabel("Состояние драфта")
+        draft_title.setObjectName("TitleLabel")
+        draft_layout.addWidget(draft_title)
+        self.draft_state_label = QLabel("Заполните пики и роль для анализа.")
+        self.draft_state_label.setWordWrap(True)
+        draft_layout.addWidget(self.draft_state_label)
+        analysis_row.addWidget(draft_card, stretch=1)
+
+        issues_card = QFrame()
+        issues_card.setProperty("class", "Card")
+        issues_layout = QVBoxLayout(issues_card)
+        issues_layout.setContentsMargins(20, 20, 20, 20)
+        issues_layout.setSpacing(8)
+        issues_title = QLabel("Проблемы команды")
+        issues_title.setObjectName("TitleLabel")
+        issues_layout.addWidget(issues_title)
+        self.issues_container = QWidget()
+        self.issues_layout = QVBoxLayout(self.issues_container)
+        self.issues_layout.setContentsMargins(0, 0, 0, 0)
+        self.issues_layout.setSpacing(6)
+        issues_layout.addWidget(self.issues_container)
+        analysis_row.addWidget(issues_card, stretch=1)
+
+        pro_layout.addLayout(analysis_row)
+
+        rec_card = QFrame()
+        rec_card.setProperty("class", "Card")
+        rec_layout = QVBoxLayout(rec_card)
+        rec_layout.setContentsMargins(20, 20, 20, 20)
+        rec_layout.setSpacing(10)
+        rec_title = QLabel("Рекомендации под вашу роль")
+        rec_title.setObjectName("TitleLabel")
+        rec_layout.addWidget(rec_title)
+        self.recommendations_container = QWidget()
+        self.recommendations_layout = QVBoxLayout(self.recommendations_container)
+        self.recommendations_layout.setContentsMargins(0, 0, 0, 0)
+        self.recommendations_layout.setSpacing(8)
+        rec_layout.addWidget(self.recommendations_container)
+        pro_layout.addWidget(rec_card)
+
+        self.stack.addWidget(pro_frame)
+
         self.render_enemies()
         self.calculate_counters()
 
@@ -2817,6 +3279,15 @@ class MainWindow(QMainWindow):
         size_grip.setObjectName("WindowSizeGrip")
         size_grip.setFixedSize(16, 16)
         root_layout.addWidget(size_grip, alignment=Qt.AlignRight | Qt.AlignBottom)
+
+        profile = self.profile_manager.get_profile()
+        self.profile_role_combo.setCurrentText(profile["role"])
+        self.profile_playstyle_combo.setCurrentText(profile["playstyle"])
+        self.profile_role_combo.currentTextChanged.connect(self._on_profile_changed)
+        self.profile_playstyle_combo.currentTextChanged.connect(self._on_profile_changed)
+        self._refresh_license_status()
+        self.render_allies()
+        self.update_pro_analysis()
 
     def _start_cache_refresh(self, force: bool = False, reason: str = ""):
         if self._refresh_in_progress:
@@ -2894,6 +3365,8 @@ class MainWindow(QMainWindow):
             self.toggle_sidebar()
         if index == 1:
             self._start_cache_refresh(force=False, reason="open-meta")
+        if index == 2:
+            self.update_pro_analysis()
 
     def start_fade_out(self):
         self.fade_anim.stop()
@@ -3816,17 +4289,90 @@ class MainWindow(QMainWindow):
             self.selected_enemies.append(hero_slug)
             self.render_enemies()
             self.calculate_counters()
+            self.update_pro_analysis()
 
     def remove_enemy(self, hero_slug):
         if hero_slug in self.selected_enemies:
             self.selected_enemies.remove(hero_slug)
             self.render_enemies()
             self.calculate_counters()
+            self.update_pro_analysis()
 
     def clear_enemies(self):
         self.selected_enemies = []
         self.render_enemies()
         self.calculate_counters()
+        self.update_pro_analysis()
+
+    def add_ally(self, hero_slug):
+        if hero_slug in self.all_heroes and len(self.selected_allies) < MAX_ALLIES and hero_slug not in self.selected_allies:
+            self.selected_allies.append(hero_slug)
+            self.render_allies()
+            self.update_pro_analysis()
+
+    def remove_ally(self, hero_slug):
+        if hero_slug in self.selected_allies:
+            self.selected_allies.remove(hero_slug)
+            self.render_allies()
+            self.update_pro_analysis()
+
+    def clear_allies(self):
+        self.selected_allies = []
+        self.render_allies()
+        self.update_pro_analysis()
+
+    def render_allies(self):
+        if not hasattr(self, "allies_list_layout"):
+            return
+        for i in reversed(range(self.allies_list_layout.count())):
+            item = self.allies_list_layout.itemAt(i)
+            if item.widget() and item.widget().objectName() != "":
+                item.widget().deleteLater()
+            elif item.widget() is None:
+                self.allies_list_layout.removeItem(item)
+
+        for hero in self.selected_allies:
+            hero_name = hero.replace("-", " ").title()
+            card = QFrame()
+            card.setObjectName("EnemyCard")
+            card.setMinimumHeight(30)
+            card_layout = QHBoxLayout(card)
+            card_layout.setContentsMargins(5, 3, 0, 3)
+            card_layout.setSpacing(6)
+
+            name_lbl = QLabel(hero_name)
+            name_lbl.setStyleSheet(f"color: {COLOR_TEXT_WHITE}; font-size: 12px;")
+            card_layout.addWidget(name_lbl)
+
+            remove_btn = QPushButton("✕")
+            remove_btn.setObjectName("RemoveButton")
+            remove_btn.clicked.connect(lambda checked=False, h=hero: self.remove_ally(h))
+            card_layout.addWidget(remove_btn)
+
+            self.allies_list_layout.insertWidget(self.allies_list_layout.count() - 1, card)
+
+    def _on_profile_changed(self):
+        role = self.profile_role_combo.currentText()
+        playstyle = self.profile_playstyle_combo.currentText()
+        self.profile_manager.update_profile(role, playstyle)
+        self.update_pro_analysis()
+
+    def _activate_license(self):
+        key = self.license_input.text()
+        ok, message = self.license_manager.activate(key)
+        self.license_status_label.setText(message)
+        if ok:
+            self.license_status_label.setStyleSheet(f"color: {COLOR_SUCCESS_GREEN}; font-size: 13px;")
+        else:
+            self.license_status_label.setStyleSheet(f"color: {COLOR_DANGER_RED}; font-size: 13px;")
+
+    def _refresh_license_status(self):
+        ok, message = self.license_manager.status()
+        self.license_status_label.setText(message)
+        if ok:
+            self.license_status_label.setStyleSheet(f"color: {COLOR_SUCCESS_GREEN}; font-size: 13px;")
+        else:
+            self.license_status_label.setStyleSheet(f"color: {COLOR_TEXT_GRAY}; font-size: 13px;")
 
     def create_placeholder_icon_label(self, hero_slug, width, height):
         initial = hero_slug[0].upper() if hero_slug else "?"
@@ -3887,6 +4433,68 @@ class MainWindow(QMainWindow):
 
         if self.enemies_list_layout.itemAt(self.enemies_list_layout.count() - 1) is None:
             self.enemies_list_layout.addStretch(1)
+
+    def update_pro_analysis(self):
+        if not hasattr(self, "draft_state_label"):
+            return
+        role = self.profile_role_combo.currentText() if hasattr(self, "profile_role_combo") else "Carry"
+        ally_count = len(self.selected_allies)
+        enemy_count = len(self.selected_enemies)
+        enemy_names = [e.replace("-", " ").title() for e in self.selected_enemies]
+        self.enemy_summary_label.setText(
+            f"Враги: {enemy_count}/{MAX_ENEMIES} ({', '.join(enemy_names) or 'нет'})"
+        )
+        self.draft_state_label.setText(
+            f"Ваши герои: {ally_count}/{MAX_ALLIES}. Роль: {role}. "
+            f"Противники: {enemy_count}/{MAX_ENEMIES}."
+        )
+
+        analysis = self.draft_analyzer.analyze(self.selected_allies, self.selected_enemies)
+        flags = analysis.get("flags", [])
+
+        while self.issues_layout.count() > 0:
+            item = self.issues_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            del item
+
+        for flag in flags:
+            lbl = QLabel(f"• {flag}")
+            lbl.setStyleSheet(f"color: {COLOR_TEXT_WHITE}; font-size: 13px;")
+            lbl.setWordWrap(True)
+            self.issues_layout.addWidget(lbl)
+
+        while self.recommendations_layout.count() > 0:
+            item = self.recommendations_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            del item
+
+        recommendations = self.recommendation_engine.recommend(
+            role, self.selected_allies, self.selected_enemies, flags
+        )
+        if not recommendations:
+            empty_lbl = QLabel("Недостаточно данных для рекомендаций.")
+            empty_lbl.setStyleSheet(f"color: {COLOR_TEXT_GRAY}; font-size: 13px;")
+            self.recommendations_layout.addWidget(empty_lbl)
+            return
+
+        for rec in recommendations:
+            hero_name = rec["hero"].replace("-", " ").title()
+            row = QFrame()
+            row.setProperty("class", "Card")
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(12, 8, 12, 8)
+            row_layout.setSpacing(8)
+            name_lbl = QLabel(hero_name)
+            name_lbl.setStyleSheet(f"color: {COLOR_TEXT_WHITE}; font-size: 14px; font-weight: bold;")
+            reason_lbl = QLabel(rec["reason"])
+            reason_lbl.setStyleSheet(f"color: {COLOR_TEXT_GRAY}; font-size: 12px;")
+            reason_lbl.setWordWrap(True)
+            row_layout.addWidget(name_lbl)
+            row_layout.addStretch(1)
+            row_layout.addWidget(reason_lbl)
+            self.recommendations_layout.addWidget(row)
 
     def calculate_counters(self):
         self.animation_timer.stop()
@@ -4307,7 +4915,7 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     if sys.platform == 'win32':
         try:
-            myappid = f'metamind.dota2.counterpick.v{APP_VERSION}'
+            myappid = f'metamind.pro.v{APP_VERSION}'
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
         except Exception:
             pass
