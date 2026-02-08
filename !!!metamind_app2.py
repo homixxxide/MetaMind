@@ -4085,6 +4085,7 @@ class MainWindow(QMainWindow):
                 border-radius: 4px;
                 color: {COLOR_TEXT_WHITE};
                 font-size: 13px;
+                padding-bottom: 2px;
                 outline: 0; 
             }}
             QListWidget::item:hover {{
