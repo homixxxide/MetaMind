@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QListWidget, QListWidgetItem, QFrame,
     QSpacerItem, QSizePolicy, QStackedWidget, QComboBox,
-    QDialog
+    QDialog, QSplitter, QSizeGrip
 )
 from PySide6.QtCore import (
     Qt, QSize, QPoint, QPropertyAnimation,
@@ -275,6 +275,11 @@ ICON_WIDTH_SMALL = 45
 ICON_HEIGHT_SMALL = 25
 ICON_WIDTH_LARGE = 60
 ICON_HEIGHT_LARGE = 34
+SCAN_THUMB_SIZE = (150, 75)
+SIFT_TEMPLATE_SIZE = (100, 56)
+FLOATING_ICON_SIZE = 34
+FLOATING_ICON_IMAGE_SIZE = 26
+UI_SCALE = 1.0
 
 COLOR_DARK_BG = "transparent"
 COLOR_ACCENT = "#dc2626"
@@ -603,6 +608,45 @@ def get_static_fallback():
         })
 
     return STATIC_HERO_META
+
+
+def calculate_ui_scale():
+    """Определяет коэффициент масштаба по разрешению экрана."""
+    app = QApplication.instance()
+    if not app:
+        return 1.0
+    screen = app.primaryScreen()
+    if not screen:
+        return 1.0
+    size = screen.size()
+    base_width = 1920
+    base_height = 1080
+    scale = min(size.width() / base_width, size.height() / base_height)
+    return max(0.75, min(1.5, scale))
+
+
+def apply_ui_scale(scale):
+    """Применяет масштаб к глобальным размерам UI/сканера."""
+    global UI_SCALE
+    global ICON_WIDTH_SMALL, ICON_HEIGHT_SMALL, ICON_WIDTH_LARGE, ICON_HEIGHT_LARGE
+    global SCAN_THUMB_SIZE, SIFT_TEMPLATE_SIZE
+    global FLOATING_ICON_SIZE, FLOATING_ICON_IMAGE_SIZE
+
+    UI_SCALE = scale
+    ICON_WIDTH_SMALL = max(24, int(round(45 * scale)))
+    ICON_HEIGHT_SMALL = max(16, int(round(25 * scale)))
+    ICON_WIDTH_LARGE = max(32, int(round(60 * scale)))
+    ICON_HEIGHT_LARGE = max(20, int(round(34 * scale)))
+    SCAN_THUMB_SIZE = (
+        max(80, int(round(150 * scale))),
+        max(40, int(round(75 * scale))),
+    )
+    SIFT_TEMPLATE_SIZE = (
+        max(60, int(round(100 * scale))),
+        max(34, int(round(56 * scale))),
+    )
+    FLOATING_ICON_SIZE = max(26, int(round(34 * scale)))
+    FLOATING_ICON_IMAGE_SIZE = max(20, int(round(26 * scale)))
 
 
 HERO_ROLES = {
@@ -1516,11 +1560,11 @@ class FloatingIcon(QWidget):
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(34, 34)
+        self.setFixedSize(FLOATING_ICON_SIZE, FLOATING_ICON_SIZE)
 
         screen = QApplication.primaryScreen().geometry()
-        x = screen.width() - self.width() - 18
-        y = 18
+        x = screen.width() - self.width() - int(18 * UI_SCALE)
+        y = int(18 * UI_SCALE)
         self.move(x, y)
 
         layout = QVBoxLayout(self)
@@ -1535,7 +1579,12 @@ class FloatingIcon(QWidget):
         if os.path.exists(icon_path):
             p = QPixmap(icon_path)
             if not p.isNull():
-                pixmap = p.scaled(26, 26, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pixmap = p.scaled(
+                    FLOATING_ICON_IMAGE_SIZE,
+                    FLOATING_ICON_IMAGE_SIZE,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
 
         if pixmap:
             self.icon_label.setPixmap(pixmap)
@@ -1715,7 +1764,7 @@ class PickDetector:
         try:
             # Захватываем область портретов героев
             screenshot = ImageGrab.grab(bbox=self.monitor_region)
-            screenshot = screenshot.resize((150, 75), Image.Resampling.LANCZOS)
+            screenshot = screenshot.resize(SCAN_THUMB_SIZE, Image.Resampling.LANCZOS)
             screenshot_gray = screenshot.convert('L')
 
             # ПЕРВЫЙ запуск - сохраняем базу (состояние до пиков)
@@ -1909,7 +1958,7 @@ class CVScanner:
                     continue
 
                 # ОПТИМИЗАЦИЯ: Уменьшаем разрешение (быстрее без потери точности)
-                template_small = cv2.resize(template, (100, 56), interpolation=cv2.INTER_AREA)
+                template_small = cv2.resize(template, SIFT_TEMPLATE_SIZE, interpolation=cv2.INTER_AREA)
 
                 # Вычисляем SIFT дескрипторы
                 kp, des = sift.detectAndCompute(template_small, None)
@@ -2260,6 +2309,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        apply_ui_scale(calculate_ui_scale())
+
         self._signals = _CacheSignals()
         self._signals.done.connect(self._on_cache_refresh_done)
         self._refresh_in_progress = False
@@ -2267,8 +2318,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("MetaMind")
         self.setGeometry(100, 100, 1200, 850)
         self.setMinimumSize(800, 600)
-        # FIX: Добавлен Qt.WindowStaysOnTopHint чтобы окно было поверх игры
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self._always_on_top = False
+        self._apply_window_flags()
 
         self.setWindowOpacity(0.0)
         self.fade_anim = QPropertyAnimation(self, b"windowOpacity")
@@ -2354,6 +2405,13 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(logo_container, alignment=Qt.AlignLeft)
         header_layout.addStretch(1)
 
+        self.overlay_button = QPushButton("📌")
+        self.overlay_button.setObjectName("OverlayToggleButton")
+        self.overlay_button.setCheckable(True)
+        self.overlay_button.setCursor(Qt.PointingHandCursor)
+        self.overlay_button.setToolTip("Закрепить поверх окон (оверлей)")
+        self.overlay_button.clicked.connect(self._toggle_overlay_mode)
+
         self.min_button = QPushButton("—")
         self.min_button.setObjectName("WindowControlButton")
         self.min_button.clicked.connect(self.showMinimized)
@@ -2365,6 +2423,7 @@ class MainWindow(QMainWindow):
         control_buttons_layout = QHBoxLayout()
         control_buttons_layout.setContentsMargins(0, 0, 0, 0)
         control_buttons_layout.setSpacing(5)
+        control_buttons_layout.addWidget(self.overlay_button)
         control_buttons_layout.addWidget(self.min_button)
         control_buttons_layout.addWidget(self.close_button)
 
@@ -2427,13 +2486,13 @@ class MainWindow(QMainWindow):
         search_block_layout.setContentsMargins(20, 20, 20, 20)
         self.search_block = HeroSearchFrame(self.all_heroes, self.add_enemy, self)
         search_block_layout.addWidget(self.search_block)
-        content_layout.addWidget(self.search_block_container)
+        cv_controls_frame = QFrame()
+        cv_controls_frame.setObjectName("CvControlsCard")
+        cv_controls_frame.setProperty("class", "Card")
+        cv_controls_layout = QHBoxLayout(cv_controls_frame)
+        cv_controls_layout.setContentsMargins(20, 15, 20, 15)
+        cv_controls_layout.setSpacing(10)
 
-        # CV Scanner Controls
-        cv_controls = QHBoxLayout()
-        cv_controls.setSpacing(10)
-
-        from PySide6.QtWidgets import QCheckBox
         self.auto_scan_btn = QPushButton("Автосканирование: ВЫКЛ")
         self.auto_scan_btn.setCheckable(True)
         self.auto_scan_btn.setFixedHeight(45)
@@ -2464,9 +2523,8 @@ class MainWindow(QMainWindow):
             }
         """)
         self.auto_scan_btn.clicked.connect(self._toggle_auto_scan_button)
-        cv_controls.addWidget(self.auto_scan_btn)
-
-        content_layout.addLayout(cv_controls)
+        cv_controls_layout.addWidget(self.auto_scan_btn)
+        cv_controls_layout.addStretch(1)
 
         # === ТАБЛИЧКА ВЫБОРА КОМАНДЫ ===
         self.team_selector_frame = QFrame()
@@ -2524,7 +2582,6 @@ class MainWindow(QMainWindow):
         team_buttons_layout.addWidget(self.dire_btn)
 
         team_selector_layout.addLayout(team_buttons_layout)
-        content_layout.addWidget(self.team_selector_frame)
 
         self.enemies_container = QFrame()
         self.enemies_container.setObjectName("EnemiesCard")
@@ -2544,8 +2601,6 @@ class MainWindow(QMainWindow):
         self.enemies_list_layout.addStretch(1)
 
         enemies_main_layout.addWidget(self.enemies_list_widget)
-        content_layout.addWidget(self.enemies_container)
-
         self.results_container = QFrame()
         self.results_container.setObjectName("ResultsCard")
         self.results_container.setProperty("class", "Card")
@@ -2570,7 +2625,23 @@ class MainWindow(QMainWindow):
         self.results_scroll_area.setWidget(self.results_scroll_content)
         results_main_layout.addWidget(self.results_scroll_area)
 
-        content_layout.addWidget(self.results_container)
+        content_splitter = QSplitter(Qt.Vertical)
+        content_splitter.setObjectName("ContentSplitter")
+        content_splitter.setHandleWidth(6)
+        content_splitter.setChildrenCollapsible(False)
+        content_splitter.addWidget(self.search_block_container)
+        content_splitter.addWidget(cv_controls_frame)
+        content_splitter.addWidget(self.team_selector_frame)
+        content_splitter.addWidget(self.enemies_container)
+        content_splitter.addWidget(self.results_container)
+        content_splitter.setStretchFactor(0, 1)
+        content_splitter.setStretchFactor(1, 0)
+        content_splitter.setStretchFactor(2, 0)
+        content_splitter.setStretchFactor(3, 1)
+        content_splitter.setStretchFactor(4, 3)
+
+        content_layout.addWidget(content_splitter)
+
         self.stack.addWidget(content_frame)
 
         # === Page 2 ===
@@ -2637,7 +2708,6 @@ class MainWindow(QMainWindow):
 
         roles_container_layout.addLayout(top_row)
         roles_container_layout.addLayout(bottom_row)
-        picker_layout.addWidget(roles_container)
 
         self.picker_results_container = QFrame()
         self.picker_results_container.setProperty("class", "Card")
@@ -2662,7 +2732,16 @@ class MainWindow(QMainWindow):
         self.picker_results_scroll.setWidget(self.picker_results_content)
         picker_results_layout.addWidget(self.picker_results_scroll, stretch=1)
 
-        picker_layout.addWidget(self.picker_results_container, stretch=1)
+        picker_splitter = QSplitter(Qt.Vertical)
+        picker_splitter.setObjectName("PickerSplitter")
+        picker_splitter.setHandleWidth(6)
+        picker_splitter.setChildrenCollapsible(False)
+        picker_splitter.addWidget(roles_container)
+        picker_splitter.addWidget(self.picker_results_container)
+        picker_splitter.setStretchFactor(0, 1)
+        picker_splitter.setStretchFactor(1, 2)
+
+        picker_layout.addWidget(picker_splitter, stretch=1)
 
         bottom_panel = QHBoxLayout()
         bottom_panel.setContentsMargins(0, 10, 0, 0)
@@ -2710,6 +2789,11 @@ class MainWindow(QMainWindow):
 
         # Инициализируем CV сканер
         self.setup_cv_scanner()
+
+        size_grip = QSizeGrip(central_widget)
+        size_grip.setObjectName("WindowSizeGrip")
+        size_grip.setFixedSize(16, 16)
+        root_layout.addWidget(size_grip, alignment=Qt.AlignRight | Qt.AlignBottom)
 
     def _start_cache_refresh(self, force: bool = False, reason: str = ""):
         if self._refresh_in_progress:
@@ -2779,6 +2863,18 @@ class MainWindow(QMainWindow):
         self.sidebar_anim.setEndValue(target)
         self.sidebar_anim.start()
         self.sidebar_expanded = not self.sidebar_expanded
+
+    def _apply_window_flags(self):
+        flags = Qt.FramelessWindowHint
+        if self._always_on_top:
+            flags |= Qt.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
+        if self.isVisible():
+            self.show()
+
+    def _toggle_overlay_mode(self):
+        self._always_on_top = self.overlay_button.isChecked()
+        self._apply_window_flags()
 
     def set_page(self, index: int):
         self.stack.setCurrentIndex(index)
@@ -3431,7 +3527,7 @@ class MainWindow(QMainWindow):
             try:
                 # Захватываем текущее состояние для следующего пика
                 screenshot = ImageGrab.grab(bbox=self.pick_detector.monitor_region)
-                screenshot = screenshot.resize((150, 75), Image.Resampling.LANCZOS)
+                screenshot = screenshot.resize(SCAN_THUMB_SIZE, Image.Resampling.LANCZOS)
                 screenshot_gray = screenshot.convert('L')
 
                 self.pick_detector.last_screenshot = screenshot_gray
@@ -4001,6 +4097,25 @@ class MainWindow(QMainWindow):
                 background-color: rgba(85, 85, 85, 0.7);
             }}
 
+            QPushButton#OverlayToggleButton {{
+                background-color: transparent;
+                border: none;
+                color: {COLOR_TEXT_WHITE};
+                font-weight: bold;
+                font-size: 16px; 
+                padding: 5px 10px;
+                min-width: 40px;
+                border-radius: 0;
+                outline: none;
+            }}
+            QPushButton#OverlayToggleButton:hover {{
+                background-color: rgba(85, 85, 85, 0.7);
+            }}
+            QPushButton#OverlayToggleButton:checked {{
+                background-color: rgba(220, 38, 38, 0.25);
+                border: 1px solid rgba(220, 38, 38, 0.5);
+            }}
+
             QPushButton#CloseWindowButton {{
                 background-color: transparent;
                 border: none;
@@ -4088,6 +4203,27 @@ class MainWindow(QMainWindow):
             }}
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
                 background: none;
+            }}
+
+            QSplitter::handle {{
+                background-color: rgba(255, 255, 255, 0.08);
+                border-radius: 3px;
+            }}
+            QSplitter::handle:hover {{
+                background-color: rgba(220, 38, 38, 0.35);
+            }}
+            QSplitter::handle:vertical {{
+                margin: 6px 0;
+                height: 6px;
+            }}
+            QSplitter::handle:horizontal {{
+                margin: 0 6px;
+                width: 6px;
+            }}
+            QSizeGrip {{
+                width: 16px;
+                height: 16px;
+                background: transparent;
             }}
         """
 
