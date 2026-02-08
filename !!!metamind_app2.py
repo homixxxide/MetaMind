@@ -2256,6 +2256,11 @@ class TeamSelectionDialog(QDialog):
 
 class MainWindow(QMainWindow):
     old_pos: QPoint | None = None
+    _resizing = False
+    _resize_edges: tuple[bool, bool, bool, bool] | None = None
+    _resize_start_pos: QPoint | None = None
+    _resize_start_geom: QRect | None = None
+    _resize_margin = 8
 
     def _toggle_auto_scan_button(self):
         """Переключатель автосканирования (кнопка)"""
@@ -2405,7 +2410,7 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(logo_container, alignment=Qt.AlignLeft)
         header_layout.addStretch(1)
 
-        self.overlay_button = QPushButton("📌")
+        self.overlay_button = QPushButton("📍")
         self.overlay_button.setObjectName("OverlayToggleButton")
         self.overlay_button.setCheckable(True)
         self.overlay_button.setCursor(Qt.PointingHandCursor)
@@ -2865,10 +2870,8 @@ class MainWindow(QMainWindow):
         self.sidebar_expanded = not self.sidebar_expanded
 
     def _apply_window_flags(self):
-        flags = Qt.FramelessWindowHint
-        if self._always_on_top:
-            flags |= Qt.WindowStaysOnTopHint
-        self.setWindowFlags(flags)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, self._always_on_top)
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
         if self.isVisible():
             self.show()
 
@@ -2896,11 +2899,24 @@ class MainWindow(QMainWindow):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton:
+            edges = self._get_resize_edges(event.position().toPoint())
+            if any(edges):
+                self._resizing = True
+                self._resize_edges = edges
+                self._resize_start_pos = event.globalPosition().toPoint()
+                self._resize_start_geom = self.geometry()
+                event.accept()
+                return
             self.old_pos = event.globalPosition().toPoint()
             event.accept()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
+        if self._resizing and self._resize_start_geom and self._resize_start_pos:
+            self._resize_window(event.globalPosition().toPoint())
+            event.accept()
+            return
+        self._update_cursor(event.position().toPoint())
         if event.buttons() == Qt.LeftButton and self.old_pos is not None:
             delta = event.globalPosition().toPoint() - self.old_pos
             self.move(self.pos() + delta)
@@ -2910,9 +2926,60 @@ class MainWindow(QMainWindow):
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton:
+            if self._resizing:
+                self._resizing = False
+                self._resize_edges = None
+                self._resize_start_pos = None
+                self._resize_start_geom = None
             self.old_pos = None
             event.accept()
         super().mouseReleaseEvent(event)
+
+    def _get_resize_edges(self, pos: QPoint) -> tuple[bool, bool, bool, bool]:
+        rect = self.rect()
+        left = pos.x() <= self._resize_margin
+        right = pos.x() >= rect.width() - self._resize_margin
+        top = pos.y() <= self._resize_margin
+        bottom = pos.y() >= rect.height() - self._resize_margin
+        return left, right, top, bottom
+
+    def _update_cursor(self, pos: QPoint):
+        if self._resizing:
+            return
+        left, right, top, bottom = self._get_resize_edges(pos)
+        if (left and top) or (right and bottom):
+            self.setCursor(Qt.SizeFDiagCursor)
+        elif (right and top) or (left and bottom):
+            self.setCursor(Qt.SizeBDiagCursor)
+        elif left or right:
+            self.setCursor(Qt.SizeHorCursor)
+        elif top or bottom:
+            self.setCursor(Qt.SizeVerCursor)
+        else:
+            self.setCursor(Qt.ArrowCursor)
+
+    def _resize_window(self, global_pos: QPoint):
+        if not self._resize_edges or not self._resize_start_geom or not self._resize_start_pos:
+            return
+        left, right, top, bottom = self._resize_edges
+        dx = global_pos.x() - self._resize_start_pos.x()
+        dy = global_pos.y() - self._resize_start_pos.y()
+        geom = QRect(self._resize_start_geom)
+
+        if left:
+            new_left = geom.left() + dx
+            max_left = geom.right() - self.minimumWidth()
+            geom.setLeft(min(new_left, max_left))
+        if right:
+            geom.setRight(max(geom.right() + dx, geom.left() + self.minimumWidth()))
+        if top:
+            new_top = geom.top() + dy
+            max_top = geom.bottom() - self.minimumHeight()
+            geom.setTop(min(new_top, max_top))
+        if bottom:
+            geom.setBottom(max(geom.bottom() + dy, geom.top() + self.minimumHeight()))
+
+        self.setGeometry(geom)
 
     def on_role_selected(self, role_key):
         self.selected_role = role_key
