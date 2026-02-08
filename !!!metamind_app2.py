@@ -2323,8 +2323,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("MetaMind")
         self.setGeometry(100, 100, 1200, 850)
         self.setMinimumSize(800, 600)
-        self._always_on_top = False
-        self._apply_window_flags()
+        self.setWindowFlags(Qt.FramelessWindowHint)
 
         self.setWindowOpacity(0.0)
         self.fade_anim = QPropertyAnimation(self, b"windowOpacity")
@@ -2410,13 +2409,6 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(logo_container, alignment=Qt.AlignLeft)
         header_layout.addStretch(1)
 
-        self.overlay_button = QPushButton("📍")
-        self.overlay_button.setObjectName("OverlayToggleButton")
-        self.overlay_button.setCheckable(True)
-        self.overlay_button.setCursor(Qt.PointingHandCursor)
-        self.overlay_button.setToolTip("Закрепить поверх окон (оверлей)")
-        self.overlay_button.clicked.connect(self._toggle_overlay_mode)
-
         self.min_button = QPushButton("—")
         self.min_button.setObjectName("WindowControlButton")
         self.min_button.clicked.connect(self.showMinimized)
@@ -2428,7 +2420,6 @@ class MainWindow(QMainWindow):
         control_buttons_layout = QHBoxLayout()
         control_buttons_layout.setContentsMargins(0, 0, 0, 0)
         control_buttons_layout.setSpacing(5)
-        control_buttons_layout.addWidget(self.overlay_button)
         control_buttons_layout.addWidget(self.min_button)
         control_buttons_layout.addWidget(self.close_button)
 
@@ -2501,7 +2492,7 @@ class MainWindow(QMainWindow):
         self.auto_scan_btn = QPushButton("Автосканирование: ВЫКЛ")
         self.auto_scan_btn.setCheckable(True)
         self.auto_scan_btn.setFixedHeight(45)
-        self.auto_scan_btn.setMinimumWidth(200)
+        self.auto_scan_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.auto_scan_btn.setCursor(Qt.PointingHandCursor)
         self.auto_scan_btn.setStyleSheet("""
             QPushButton {
@@ -2529,7 +2520,6 @@ class MainWindow(QMainWindow):
         """)
         self.auto_scan_btn.clicked.connect(self._toggle_auto_scan_button)
         cv_controls_layout.addWidget(self.auto_scan_btn)
-        cv_controls_layout.addStretch(1)
 
         # === ТАБЛИЧКА ВЫБОРА КОМАНДЫ ===
         self.team_selector_frame = QFrame()
@@ -2869,15 +2859,6 @@ class MainWindow(QMainWindow):
         self.sidebar_anim.start()
         self.sidebar_expanded = not self.sidebar_expanded
 
-    def _apply_window_flags(self):
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, self._always_on_top)
-        self.setWindowFlag(Qt.FramelessWindowHint, True)
-        if self.isVisible():
-            self.show()
-
-    def _toggle_overlay_mode(self):
-        self._always_on_top = self.overlay_button.isChecked()
-        self._apply_window_flags()
 
     def set_page(self, index: int):
         self.stack.setCurrentIndex(index)
@@ -4164,24 +4145,6 @@ class MainWindow(QMainWindow):
                 background-color: rgba(85, 85, 85, 0.7);
             }}
 
-            QPushButton#OverlayToggleButton {{
-                background-color: transparent;
-                border: none;
-                color: {COLOR_TEXT_WHITE};
-                font-weight: bold;
-                font-size: 16px; 
-                padding: 5px 10px;
-                min-width: 40px;
-                border-radius: 0;
-                outline: none;
-            }}
-            QPushButton#OverlayToggleButton:hover {{
-                background-color: rgba(85, 85, 85, 0.7);
-            }}
-            QPushButton#OverlayToggleButton:checked {{
-                background-color: rgba(220, 38, 38, 0.25);
-                border: 1px solid rgba(220, 38, 38, 0.5);
-            }}
 
             QPushButton#CloseWindowButton {{
                 background-color: transparent;
@@ -4332,20 +4295,14 @@ if __name__ == "__main__":
     print("[MAIN] ✅ GSI сервер запущен в фоне")
 
     main_window = None
-    floating_icon = None
 
 
     def on_splash_loaded(opendota_data):
-        global main_window, floating_icon
+        global main_window
         main_window = MainWindow()
         if opendota_data:
             main_window.opendota_cache = opendota_data
         main_window.show()
-
-        floating_icon = FloatingIcon(main_window)
-        floating_icon.show()
-
-        app.aboutToQuit.connect(lambda: floating_icon.close() if floating_icon else None)
 
 
     splash = SplashScreen(on_splash_loaded)
