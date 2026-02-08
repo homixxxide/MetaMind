@@ -1493,11 +1493,13 @@ class HeroSearchFrame(QWidget):
             QFrame#SuggestionsFrame {{
                 border: 1px solid {COLOR_ACCENT};
                 border-radius: 4px;
+                background: transparent;
             }}
         """)
         suggestions_layout = QVBoxLayout(self.suggestions_frame)
-        suggestions_layout.setContentsMargins(0, 0, 0, 0)
+        suggestions_layout.setContentsMargins(1, 1, 1, 1)
         suggestions_layout.setSpacing(0)
+        self.suggestions_frame.setVisible(False)
 
         self.suggestions_list = QListWidget()
         self.suggestions_list.setVisible(False)
@@ -1520,6 +1522,8 @@ class HeroSearchFrame(QWidget):
 
         if not query:
             self.suggestions_list.setVisible(False)
+            if hasattr(self, "suggestions_frame"):
+                self.suggestions_frame.setVisible(False)
             return
 
         matches = []
@@ -1538,14 +1542,20 @@ class HeroSearchFrame(QWidget):
                 item.setData(Qt.UserRole, hero_slug)
                 self.suggestions_list.addItem(item)
             self.suggestions_list.setVisible(True)
+            if hasattr(self, "suggestions_frame"):
+                self.suggestions_frame.setVisible(True)
         else:
             self.suggestions_list.setVisible(False)
+            if hasattr(self, "suggestions_frame"):
+                self.suggestions_frame.setVisible(False)
 
     def on_enter_pressed(self):
         if len(self.current_matches) == 1:
             hero_slug = self.current_matches[0]
             self.entry.clear()
             self.suggestions_list.setVisible(False)
+            if hasattr(self, "suggestions_frame"):
+                self.suggestions_frame.setVisible(False)
             self.current_matches = []
             self.on_select_callback(hero_slug)
 
@@ -1553,6 +1563,8 @@ class HeroSearchFrame(QWidget):
         hero_slug = item.data(Qt.UserRole)
         self.entry.clear()
         self.suggestions_list.setVisible(False)
+        if hasattr(self, "suggestions_frame"):
+            self.suggestions_frame.setVisible(False)
         self.current_matches = []
         self.on_select_callback(hero_slug)
 
