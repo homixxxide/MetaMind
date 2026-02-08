@@ -3084,20 +3084,56 @@ class MainWindow(QMainWindow):
         # === Page 3 (PRO) ===
         pro_frame = QFrame()
         pro_frame.setObjectName("ProFrame")
-        pro_layout = QVBoxLayout(pro_frame)
+        pro_layout = QHBoxLayout(pro_frame)
         pro_layout.setContentsMargins(30, 40, 30, 40)
         pro_layout.setSpacing(20)
 
+        pro_nav = QFrame()
+        pro_nav.setProperty("class", "Card")
+        pro_nav_layout = QVBoxLayout(pro_nav)
+        pro_nav_layout.setContentsMargins(20, 20, 20, 20)
+        pro_nav_layout.setSpacing(10)
+
+        pro_nav_title = QLabel("MetaMind PRO")
+        pro_nav_title.setStyleSheet(f"color: {COLOR_TEXT_WHITE}; font-size: 18px; font-weight: bold;")
+        pro_nav_layout.addWidget(pro_nav_title)
+
+        self.pro_nav_profile = QPushButton("Профиль")
+        self.pro_nav_license = QPushButton("Лицензия")
+        self.pro_nav_picks = QPushButton("Пики")
+        self.pro_nav_analysis = QPushButton("Анализ")
+        self.pro_nav_recommend = QPushButton("Рекомендации")
+
+        for btn in (
+            self.pro_nav_profile,
+            self.pro_nav_license,
+            self.pro_nav_picks,
+            self.pro_nav_analysis,
+            self.pro_nav_recommend,
+        ):
+            btn.setObjectName("SidebarButton")
+            btn.setMinimumHeight(45)
+            pro_nav_layout.addWidget(btn)
+
+        pro_nav_layout.addStretch(1)
+        pro_layout.addWidget(pro_nav, stretch=0)
+
+        pro_content = QFrame()
+        pro_content_layout = QVBoxLayout(pro_content)
+        pro_content_layout.setContentsMargins(0, 0, 0, 0)
+        pro_content_layout.setSpacing(15)
+
         pro_header = QLabel("MetaMind PRO — Анализ драфта")
         pro_header.setStyleSheet(f"color: {COLOR_TEXT_WHITE}; font-size: 20px; font-weight: bold;")
-        pro_layout.addWidget(pro_header)
+        pro_content_layout.addWidget(pro_header)
 
-        top_row = QHBoxLayout()
-        top_row.setSpacing(15)
+        self.pro_stack = QStackedWidget()
+        pro_content_layout.addWidget(self.pro_stack, stretch=1)
 
-        profile_card = QFrame()
-        profile_card.setProperty("class", "Card")
-        profile_layout = QVBoxLayout(profile_card)
+        # Profile page
+        profile_page = QFrame()
+        profile_page.setProperty("class", "Card")
+        profile_layout = QVBoxLayout(profile_page)
         profile_layout.setContentsMargins(20, 20, 20, 20)
         profile_layout.setSpacing(12)
 
@@ -3125,12 +3161,12 @@ class MainWindow(QMainWindow):
         playstyle_row.addWidget(playstyle_label)
         playstyle_row.addWidget(self.profile_playstyle_combo, stretch=1)
         profile_layout.addLayout(playstyle_row)
+        self.pro_stack.addWidget(profile_page)
 
-        top_row.addWidget(profile_card, stretch=1)
-
-        license_card = QFrame()
-        license_card.setProperty("class", "Card")
-        license_layout = QVBoxLayout(license_card)
+        # License page
+        license_page = QFrame()
+        license_page.setProperty("class", "Card")
+        license_layout = QVBoxLayout(license_page)
         license_layout.setContentsMargins(20, 20, 20, 20)
         license_layout.setSpacing(12)
 
@@ -3150,13 +3186,13 @@ class MainWindow(QMainWindow):
         license_row.addWidget(self.license_input, stretch=1)
         license_row.addWidget(self.license_activate_btn)
         license_layout.addLayout(license_row)
+        self.pro_stack.addWidget(license_page)
 
-        top_row.addWidget(license_card, stretch=1)
-
-        pro_layout.addLayout(top_row)
-
-        picks_row = QHBoxLayout()
-        picks_row.setSpacing(15)
+        # Picks page
+        picks_page = QFrame()
+        picks_layout = QHBoxLayout(picks_page)
+        picks_layout.setContentsMargins(0, 0, 0, 0)
+        picks_layout.setSpacing(15)
 
         ally_card = QFrame()
         ally_card.setProperty("class", "Card")
@@ -3177,8 +3213,7 @@ class MainWindow(QMainWindow):
         self.allies_list_layout.setSpacing(10)
         self.allies_list_layout.addStretch(1)
         ally_layout.addWidget(self.allies_list_container)
-
-        picks_row.addWidget(ally_card, stretch=1)
+        picks_layout.addWidget(ally_card, stretch=1)
 
         enemy_card = QFrame()
         enemy_card.setProperty("class", "Card")
@@ -3193,12 +3228,14 @@ class MainWindow(QMainWindow):
         self.enemy_summary_label = QLabel("Пока нет данных")
         self.enemy_summary_label.setStyleSheet(f"color: {COLOR_TEXT_GRAY}; font-size: 13px;")
         enemy_layout.addWidget(self.enemy_summary_label)
+        picks_layout.addWidget(enemy_card, stretch=1)
+        self.pro_stack.addWidget(picks_page)
 
-        picks_row.addWidget(enemy_card, stretch=1)
-        pro_layout.addLayout(picks_row)
-
-        analysis_row = QHBoxLayout()
-        analysis_row.setSpacing(15)
+        # Analysis page
+        analysis_page = QFrame()
+        analysis_layout = QHBoxLayout(analysis_page)
+        analysis_layout.setContentsMargins(0, 0, 0, 0)
+        analysis_layout.setSpacing(15)
 
         draft_card = QFrame()
         draft_card.setProperty("class", "Card")
@@ -3211,7 +3248,7 @@ class MainWindow(QMainWindow):
         self.draft_state_label = QLabel("Заполните пики и роль для анализа.")
         self.draft_state_label.setWordWrap(True)
         draft_layout.addWidget(self.draft_state_label)
-        analysis_row.addWidget(draft_card, stretch=1)
+        analysis_layout.addWidget(draft_card, stretch=1)
 
         issues_card = QFrame()
         issues_card.setProperty("class", "Card")
@@ -3226,13 +3263,13 @@ class MainWindow(QMainWindow):
         self.issues_layout.setContentsMargins(0, 0, 0, 0)
         self.issues_layout.setSpacing(6)
         issues_layout.addWidget(self.issues_container)
-        analysis_row.addWidget(issues_card, stretch=1)
+        analysis_layout.addWidget(issues_card, stretch=1)
+        self.pro_stack.addWidget(analysis_page)
 
-        pro_layout.addLayout(analysis_row)
-
-        rec_card = QFrame()
-        rec_card.setProperty("class", "Card")
-        rec_layout = QVBoxLayout(rec_card)
+        # Recommendations page
+        rec_page = QFrame()
+        rec_page.setProperty("class", "Card")
+        rec_layout = QVBoxLayout(rec_page)
         rec_layout.setContentsMargins(20, 20, 20, 20)
         rec_layout.setSpacing(10)
         rec_title = QLabel("Рекомендации под вашу роль")
@@ -3243,8 +3280,10 @@ class MainWindow(QMainWindow):
         self.recommendations_layout.setContentsMargins(0, 0, 0, 0)
         self.recommendations_layout.setSpacing(8)
         rec_layout.addWidget(self.recommendations_container)
-        pro_layout.addWidget(rec_card)
+        self.pro_stack.addWidget(rec_page)
 
+        self.pro_stack.setCurrentIndex(2)
+        pro_layout.addWidget(pro_content, stretch=1)
         self.stack.addWidget(pro_frame)
 
         self.render_enemies()
@@ -3288,6 +3327,12 @@ class MainWindow(QMainWindow):
         self._refresh_license_status()
         self.render_allies()
         self.update_pro_analysis()
+
+        self.pro_nav_profile.clicked.connect(lambda: self._set_pro_section(0))
+        self.pro_nav_license.clicked.connect(lambda: self._set_pro_section(1))
+        self.pro_nav_picks.clicked.connect(lambda: self._set_pro_section(2))
+        self.pro_nav_analysis.clicked.connect(lambda: self._set_pro_section(3))
+        self.pro_nav_recommend.clicked.connect(lambda: self._set_pro_section(4))
 
     def _start_cache_refresh(self, force: bool = False, reason: str = ""):
         if self._refresh_in_progress:
@@ -3367,6 +3412,7 @@ class MainWindow(QMainWindow):
             self._start_cache_refresh(force=False, reason="open-meta")
         if index == 2:
             self.update_pro_analysis()
+            self._set_pro_section(self.pro_stack.currentIndex())
 
     def start_fade_out(self):
         self.fade_anim.stop()
@@ -4373,6 +4419,11 @@ class MainWindow(QMainWindow):
             self.license_status_label.setStyleSheet(f"color: {COLOR_SUCCESS_GREEN}; font-size: 13px;")
         else:
             self.license_status_label.setStyleSheet(f"color: {COLOR_TEXT_GRAY}; font-size: 13px;")
+
+    def _set_pro_section(self, index: int):
+        if not hasattr(self, "pro_stack"):
+            return
+        self.pro_stack.setCurrentIndex(index)
 
     def create_placeholder_icon_label(self, hero_slug, width, height):
         initial = hero_slug[0].upper() if hero_slug else "?"
