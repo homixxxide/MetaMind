@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QListWidget, QListWidgetItem, QFrame,
     QSpacerItem, QSizePolicy, QStackedWidget, QComboBox,
-    QDialog, QSplitter, QSizeGrip
+    QDialog, QSplitter, QSizeGrip, QAbstractItemView
 )
 from PySide6.QtCore import (
     Qt, QSize, QPoint, QPropertyAnimation,
@@ -1489,10 +1489,12 @@ class HeroSearchFrame(QWidget):
 
         self.suggestions_list = QListWidget()
         self.suggestions_list.setVisible(False)
-        self.suggestions_list.setFixedHeight(200)
+        self.suggestions_list.setFixedHeight(150)
         self.suggestions_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.suggestions_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.suggestions_list.setFocusPolicy(Qt.StrongFocus)
+        self.suggestions_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.suggestions_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.suggestions_list.setVerticalScrollMode(QAbstractItemView.ScrollPerItem)
         self.suggestions_list.itemClicked.connect(self.select_hero_from_list)
         layout.addWidget(self.suggestions_list)
 
