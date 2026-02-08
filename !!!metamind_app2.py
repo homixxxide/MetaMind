@@ -252,7 +252,7 @@ def start_gsi_server():
 
 # ================= КОНФИГУРАЦИЯ ПРИЛОЖЕНИЯ =================
 
-APP_VERSION = "6.2"
+APP_VERSION = "6.3"
 CACHE_UPDATE_HOURS = 24
 APP_DATA_FOLDER = "MetaMind"
 
@@ -1138,11 +1138,9 @@ class WhatsNewDialog(QDialog):
         changes_layout.setSpacing(14)
 
         changes = [
-            ("⚡", "Умный детектор пиков героев", COLOR_TEXT_WHITE),
-            ("-", "Исправлена быстрая реакция на начало игры", COLOR_TEXT_WHITE),
-            ("-", "Исправлено запоминание команды GSI между играми", COLOR_TEXT_WHITE),
-            ("-", "Улучшен автосброс команды при старой информации", COLOR_TEXT_WHITE),
-            ("-", "Оптимизация проверки героев на экране", COLOR_TEXT_WHITE),
+            ("✅", "Улучшено масштабирование UI под разные разрешения", COLOR_TEXT_WHITE),
+            ("✅", "Окно теперь корректно меняет размер по границам", COLOR_TEXT_WHITE),
+            ("✅", "Список подсказок героев показывает больше строк", COLOR_TEXT_WHITE),
         ]
 
         for icon, text, color in changes:
@@ -1493,6 +1491,8 @@ class HeroSearchFrame(QWidget):
         self.suggestions_list.setVisible(False)
         self.suggestions_list.setMinimumHeight(220)
         self.suggestions_list.setMaximumHeight(320)
+        self.suggestions_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.suggestions_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.suggestions_list.itemClicked.connect(self.select_hero_from_list)
         layout.addWidget(self.suggestions_list)
 
