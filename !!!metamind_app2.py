@@ -1489,7 +1489,10 @@ class HeroSearchFrame(QWidget):
 
         self.suggestions_list = QListWidget()
         self.suggestions_list.setVisible(False)
-        self.suggestions_list.setMaximumHeight(200)
+        self.suggestions_list.setFixedHeight(200)
+        self.suggestions_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.suggestions_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.suggestions_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.suggestions_list.itemClicked.connect(self.select_hero_from_list)
         layout.addWidget(self.suggestions_list)
 
