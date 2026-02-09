@@ -25,6 +25,7 @@ import time
 import threading
 import requests
 import certifi
+import uuid
 from io import BytesIO
 import ctypes
 
@@ -36,7 +37,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QListWidget, QListWidgetItem, QFrame,
     QSpacerItem, QSizePolicy, QStackedWidget, QComboBox,
-    QDialog
+    QDialog, QSplitter, QSizeGrip, QAbstractItemView
 )
 from PySide6.QtCore import (
     Qt, QSize, QPoint, QPropertyAnimation,
@@ -252,7 +253,8 @@ def start_gsi_server():
 
 # ================= КОНФИГУРАЦИЯ ПРИЛОЖЕНИЯ =================
 
-APP_VERSION = "6.2"
+APP_VERSION = "6.3"
+APP_TITLE = "MetaMind PRO"
 CACHE_UPDATE_HOURS = 24
 APP_DATA_FOLDER = "MetaMind"
 
@@ -264,8 +266,14 @@ AM_COUNTERS_FILE = "antimage_counters.json"
 OPENDOTA_CACHE_FILE = "opendota_cache.json"
 OPENDOTA_CACHE_META_FILE = "opendota_cache_meta.json"
 VERSION_FILE = "last_version.txt"
+PRO_PROFILE_FILE = "pro_profile.json"
+PRO_LICENSE_FILE = "pro_license.json"
+HERO_TAGS_FILE = "hero_tags.json"
+HERO_SYNERGIES_FILE = "hero_synergies.json"
+HERO_COUNTERS_FILE = "hero_counters.json"
 
 MAX_ENEMIES = 5
+MAX_ALLIES = 5
 AM_SLUG = "anti-mage"
 
 BACKGROUND_IMAGE_FILE = "background.jpg"
@@ -275,6 +283,11 @@ ICON_WIDTH_SMALL = 45
 ICON_HEIGHT_SMALL = 25
 ICON_WIDTH_LARGE = 60
 ICON_HEIGHT_LARGE = 34
+SCAN_THUMB_SIZE = (150, 75)
+SIFT_TEMPLATE_SIZE = (100, 56)
+FLOATING_ICON_SIZE = 34
+FLOATING_ICON_IMAGE_SIZE = 26
+UI_SCALE = 1.0
 
 COLOR_DARK_BG = "transparent"
 COLOR_ACCENT = "#dc2626"
@@ -605,6 +618,45 @@ def get_static_fallback():
     return STATIC_HERO_META
 
 
+def calculate_ui_scale():
+    """Определяет коэффициент масштаба по разрешению экрана."""
+    app = QApplication.instance()
+    if not app:
+        return 1.0
+    screen = app.primaryScreen()
+    if not screen:
+        return 1.0
+    size = screen.size()
+    base_width = 1920
+    base_height = 1080
+    scale = min(size.width() / base_width, size.height() / base_height)
+    return max(0.75, min(1.5, scale))
+
+
+def apply_ui_scale(scale):
+    """Применяет масштаб к глобальным размерам UI/сканера."""
+    global UI_SCALE
+    global ICON_WIDTH_SMALL, ICON_HEIGHT_SMALL, ICON_WIDTH_LARGE, ICON_HEIGHT_LARGE
+    global SCAN_THUMB_SIZE, SIFT_TEMPLATE_SIZE
+    global FLOATING_ICON_SIZE, FLOATING_ICON_IMAGE_SIZE
+
+    UI_SCALE = scale
+    ICON_WIDTH_SMALL = max(24, int(round(45 * scale)))
+    ICON_HEIGHT_SMALL = max(16, int(round(25 * scale)))
+    ICON_WIDTH_LARGE = max(32, int(round(60 * scale)))
+    ICON_HEIGHT_LARGE = max(20, int(round(34 * scale)))
+    SCAN_THUMB_SIZE = (
+        max(80, int(round(150 * scale))),
+        max(40, int(round(75 * scale))),
+    )
+    SIFT_TEMPLATE_SIZE = (
+        max(60, int(round(100 * scale))),
+        max(34, int(round(56 * scale))),
+    )
+    FLOATING_ICON_SIZE = max(26, int(round(34 * scale)))
+    FLOATING_ICON_IMAGE_SIZE = max(20, int(round(26 * scale)))
+
+
 HERO_ROLES = {
     "Hard Support": [
         "crystal_maiden", "shadow_shaman", "witch_doctor", "warlock", "dazzle",
@@ -758,6 +810,18 @@ def get_app_data_path() -> str:
                 app_folder = os.path.abspath(os.path.dirname(__file__))
 
     return app_folder
+
+
+def load_appdata_json(filename: str, default=None):
+    full_path = os.path.join(get_app_data_path(), filename)
+    if not os.path.exists(full_path):
+        return default if default is not None else {}
+    try:
+        with open(full_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Ошибка чтения JSON из {full_path}: {e}")
+        return default if default is not None else {}
 
 
 def get_bundled_cache_path() -> str:
@@ -1018,6 +1082,196 @@ def refresh_opendota_cache_background() -> None:
     threading.Thread(target=worker, daemon=True).start()
 
 
+# ================= MetaMind PRO: данные и анализ =================
+
+ROLE_TAG_MAP = {
+    "Carry": ["damage", "late", "physical"],
+    "Mider": ["magic", "burst", "initiation", "early"],
+    "Offlaner": ["frontline", "initiation", "disable", "early"],
+    "Support": ["save", "disable", "vision", "early"],
+    "Hard Support": ["save", "disable", "vision", "early"],
+}
+
+
+class PlayerProfileManager:
+    def __init__(self):
+        self.profile = load_appdata_json(PRO_PROFILE_FILE, default={})
+
+    def get_profile(self):
+        return {
+            "role": self.profile.get("role", "Carry"),
+            "playstyle": self.profile.get("playstyle", "Сбалансированный"),
+        }
+
+    def update_profile(self, role: str, playstyle: str):
+        self.profile["role"] = role
+        self.profile["playstyle"] = playstyle
+        save_json_file(PRO_PROFILE_FILE, self.profile)
+
+
+class LicenseManager:
+    def __init__(self):
+        self.data = load_appdata_json(PRO_LICENSE_FILE, default={})
+
+    def _hwid(self):
+        try:
+            return str(uuid.getnode())
+        except Exception:
+            return "unknown"
+
+    def activate(self, key: str) -> tuple[bool, str]:
+        key = key.strip()
+        if len(key) < 8:
+            return False, "Ключ слишком короткий"
+        self.data = {
+            "key": key,
+            "hwid": self._hwid(),
+            "activated_at": int(time.time()),
+            "last_check": int(time.time()),
+        }
+        save_json_file(PRO_LICENSE_FILE, self.data)
+        return True, "Лицензия активирована"
+
+    def status(self) -> tuple[bool, str]:
+        key = self.data.get("key")
+        if not key:
+            return False, "Лицензия не активирована"
+        if self.data.get("hwid") != self._hwid():
+            return False, "Лицензия не для этого устройства"
+        return True, "PRO активирован"
+
+
+class MetaDataProvider:
+    def __init__(self):
+        self.cache = load_opendota_cache(prefer_appdata=True) or get_static_fallback()
+        self.hero_tags = load_json_file(HERO_TAGS_FILE) or {}
+
+    def _find_stat(self, hero_slug: str):
+        if not self.cache:
+            return None
+        for hero in self.cache:
+            slug = (hero.get("name") or "").replace("npc_dota_hero_", "")
+            if slug == hero_slug:
+                return hero
+        return None
+
+    def get_winrate(self, hero_slug: str) -> float:
+        stat = self._find_stat(hero_slug)
+        if not stat:
+            return 0.0
+        for pick_key, win_key in (("pro_pick", "pro_win"), ("1_pick", "1_win")):
+            picks = stat.get(pick_key, 0) or 0
+            wins = stat.get(win_key, 0) or 0
+            if picks > 0:
+                return (wins / picks) * 100.0
+        return 0.0
+
+    def get_tags(self, hero_slug: str, role: str | None = None):
+        tags = set(self.hero_tags.get(hero_slug, []))
+        if role:
+            tags.update(ROLE_TAG_MAP.get(role, []))
+        return tags
+
+
+class ContextFlagsEngine:
+    def analyze(self, ally_tags: set, enemy_tags: set) -> list[str]:
+        flags = []
+        if "push" not in ally_tags:
+            flags.append("Не хватает пуш-потенциала (сложно ломать вышки).")
+        if "save" not in ally_tags:
+            flags.append("Нет сейва для ключевых героев.")
+        if "frontline" not in ally_tags:
+            flags.append("Нет фронтлайна — некому принимать урон.")
+        if "initiation" not in ally_tags:
+            flags.append("Мало инициации — сложно начинать драки.")
+        if "disable" not in ally_tags and "silence" not in ally_tags:
+            flags.append("Недостаточно контроля (станы/сайленсы).")
+
+        if "late" not in ally_tags:
+            flags.append("Слабый лейт-потенциал.")
+        if "early" not in ally_tags:
+            flags.append("Слабая игра до 20 минуты.")
+
+        magic = "magic" in ally_tags
+        physical = "physical" in ally_tags
+        if magic and not physical:
+            flags.append("Перекос урона в магию.")
+        if physical and not magic:
+            flags.append("Перекос урона в физику.")
+        if not flags:
+            flags.append("Драфт выглядит сбалансированным.")
+        return flags
+
+
+class DraftAnalyzer:
+    def __init__(self, meta_provider: MetaDataProvider):
+        self.meta_provider = meta_provider
+        self.flags_engine = ContextFlagsEngine()
+
+    def build_tags(self, heroes: list[str], role_hint: str | None = None) -> set:
+        tags = set()
+        for hero in heroes:
+            hero_role = role_hint
+            for role, heroes_list in HERO_ROLES.items():
+                if hero in heroes_list:
+                    hero_role = role
+                    break
+            tags.update(self.meta_provider.get_tags(hero, hero_role))
+        return tags
+
+    def analyze(self, allies: list[str], enemies: list[str]) -> dict:
+        ally_tags = self.build_tags(allies)
+        enemy_tags = self.build_tags(enemies)
+        flags = self.flags_engine.analyze(ally_tags, enemy_tags)
+        return {
+            "ally_tags": ally_tags,
+            "enemy_tags": enemy_tags,
+            "flags": flags,
+        }
+
+
+class RecommendationEngine:
+    def __init__(self, meta_provider: MetaDataProvider):
+        self.meta_provider = meta_provider
+
+    def recommend(self, role: str, allies: list[str], enemies: list[str], flags: list[str]) -> list[dict]:
+        candidates = HERO_ROLES.get(role, [])
+        blocked = set(allies + enemies)
+        needs = set()
+        if any("фронтлайна" in f for f in flags):
+            needs.add("frontline")
+        if any("инициации" in f for f in flags):
+            needs.add("initiation")
+        if any("контроля" in f for f in flags):
+            needs.add("disable")
+        if any("пуш" in f for f in flags):
+            needs.add("push")
+
+        results = []
+        for hero in candidates:
+            if hero in blocked:
+                continue
+            score = self.meta_provider.get_winrate(hero)
+            hero_tags = self.meta_provider.get_tags(hero, role)
+            bonus = len(needs.intersection(hero_tags)) * 3.5
+            score += bonus
+            reasons = []
+            if bonus > 0:
+                reasons.append("закрывает слабости драфта")
+            if "late" in hero_tags:
+                reasons.append("хорош в лейте")
+            if "early" in hero_tags:
+                reasons.append("силён в ранней игре")
+            results.append({
+                "hero": hero,
+                "score": score,
+                "reason": ", ".join(reasons) or "стабилен по мете",
+            })
+
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:5]
+
+
 # ================= UI: What's New =================
 class WhatsNewDialog(QDialog):
     def __init__(self, parent=None):
@@ -1094,11 +1348,9 @@ class WhatsNewDialog(QDialog):
         changes_layout.setSpacing(14)
 
         changes = [
-            ("⚡", "Умный детектор пиков героев", COLOR_TEXT_WHITE),
-            ("-", "Исправлена быстрая реакция на начало игры", COLOR_TEXT_WHITE),
-            ("-", "Исправлено запоминание команды GSI между играми", COLOR_TEXT_WHITE),
-            ("-", "Улучшен автосброс команды при старой информации", COLOR_TEXT_WHITE),
-            ("-", "Оптимизация проверки героев на экране", COLOR_TEXT_WHITE),
+            ("✅", "Улучшено масштабирование UI под разные разрешения", COLOR_TEXT_WHITE),
+            ("✅", "Окно теперь корректно меняет размер по границам", COLOR_TEXT_WHITE),
+            ("✅", "Список подсказок героев показывает больше строк", COLOR_TEXT_WHITE),
         ]
 
         for icon, text, color in changes:
@@ -1445,13 +1697,118 @@ class HeroSearchFrame(QWidget):
 
         layout.addLayout(info_button_layout)
 
+        self.suggestions_frame = QFrame()
+        self.suggestions_frame.setObjectName("SuggestionsFrame")
+        self.suggestions_frame.setStyleSheet(f"""
+            QFrame#SuggestionsFrame {{
+                border: 1px solid {COLOR_ACCENT};
+                border-radius: 4px;
+                background: transparent;
+            }}
+        """)
+        suggestions_layout = QVBoxLayout(self.suggestions_frame)
+        suggestions_layout.setContentsMargins(1, 1, 1, 1)
+        suggestions_layout.setSpacing(0)
+        self.suggestions_frame.setVisible(False)
+
         self.suggestions_list = QListWidget()
         self.suggestions_list.setVisible(False)
-        self.suggestions_list.setMaximumHeight(200)
+        self.suggestions_list.setFixedHeight(150)
+        self.suggestions_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.suggestions_list.setFocusPolicy(Qt.StrongFocus)
+        self.suggestions_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.suggestions_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.suggestions_list.setVerticalScrollMode(QAbstractItemView.ScrollPerItem)
         self.suggestions_list.itemClicked.connect(self.select_hero_from_list)
-        layout.addWidget(self.suggestions_list)
+        suggestions_layout.addWidget(self.suggestions_list)
+        layout.addWidget(self.suggestions_frame)
 
         layout.addItem(QSpacerItem(20, 15, QSizePolicy.Minimum, QSizePolicy.Fixed))
+
+    def on_key_release(self, query):
+        query = query.lower()
+        self.suggestions_list.clear()
+        self.current_matches = []
+
+        if not query:
+            self.suggestions_list.setVisible(False)
+            if hasattr(self, "suggestions_frame"):
+                self.suggestions_frame.setVisible(False)
+            return
+
+        matches = []
+        for hero_slug in self.all_heroes:
+            clean_name = hero_slug.replace("-", " ")
+            if query in clean_name or query in hero_slug:
+                matches.append(hero_slug)
+
+        matches.sort(key=lambda x: x.startswith(query), reverse=True)
+        self.current_matches = matches[:10]
+
+        if self.current_matches:
+            for hero_slug in self.current_matches:
+                display_name = hero_slug.replace("-", " ").title()
+                item = QListWidgetItem(display_name)
+                item.setData(Qt.UserRole, hero_slug)
+                self.suggestions_list.addItem(item)
+            self.suggestions_list.setVisible(True)
+            if hasattr(self, "suggestions_frame"):
+                self.suggestions_frame.setVisible(True)
+        else:
+            self.suggestions_list.setVisible(False)
+            if hasattr(self, "suggestions_frame"):
+                self.suggestions_frame.setVisible(False)
+
+    def on_enter_pressed(self):
+        if len(self.current_matches) == 1:
+            hero_slug = self.current_matches[0]
+            self.entry.clear()
+            self.suggestions_list.setVisible(False)
+            if hasattr(self, "suggestions_frame"):
+                self.suggestions_frame.setVisible(False)
+            self.current_matches = []
+            self.on_select_callback(hero_slug)
+
+    def select_hero_from_list(self, item):
+        hero_slug = item.data(Qt.UserRole)
+        self.entry.clear()
+        self.suggestions_list.setVisible(False)
+        if hasattr(self, "suggestions_frame"):
+            self.suggestions_frame.setVisible(False)
+        self.current_matches = []
+        self.on_select_callback(hero_slug)
+
+    def update_status(self, count):
+        self.status_label.setText(f"Выбрано врагов: [{count}/{MAX_ENEMIES}]")
+
+
+# ================= UI: PRO Hero Search =================
+class ProHeroSearchFrame(QFrame):
+    def __init__(self, title: str, all_heroes: list[str], on_select_callback, parent=None):
+        super().__init__(parent)
+        self.all_heroes = all_heroes
+        self.on_select_callback = on_select_callback
+        self.current_matches = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        lbl = QLabel(title)
+        lbl.setObjectName("TitleLabel")
+        layout.addWidget(lbl)
+
+        self.entry = QLineEdit()
+        self.entry.setPlaceholderText("ИМЯ ГЕРОЯ...")
+        self.entry.textChanged.connect(self.on_key_release)
+        self.entry.returnPressed.connect(self.on_enter_pressed)
+        layout.addWidget(self.entry)
+
+        self.suggestions_list = QListWidget()
+        self.suggestions_list.setVisible(False)
+        self.suggestions_list.setMaximumHeight(180)
+        self.suggestions_list.itemClicked.connect(self.select_hero_from_list)
+        layout.addWidget(self.suggestions_list)
 
     def on_key_release(self, query):
         query = query.lower()
@@ -1496,9 +1853,6 @@ class HeroSearchFrame(QWidget):
         self.current_matches = []
         self.on_select_callback(hero_slug)
 
-    def update_status(self, count):
-        self.status_label.setText(f"Выбрано врагов: [{count}/{MAX_ENEMIES}]")
-
 
 # ================= UI: FloatingIcon =================
 class FloatingIcon(QWidget):
@@ -1516,11 +1870,11 @@ class FloatingIcon(QWidget):
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(34, 34)
+        self.setFixedSize(FLOATING_ICON_SIZE, FLOATING_ICON_SIZE)
 
         screen = QApplication.primaryScreen().geometry()
-        x = screen.width() - self.width() - 18
-        y = 18
+        x = screen.width() - self.width() - int(18 * UI_SCALE)
+        y = int(18 * UI_SCALE)
         self.move(x, y)
 
         layout = QVBoxLayout(self)
@@ -1535,7 +1889,12 @@ class FloatingIcon(QWidget):
         if os.path.exists(icon_path):
             p = QPixmap(icon_path)
             if not p.isNull():
-                pixmap = p.scaled(26, 26, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pixmap = p.scaled(
+                    FLOATING_ICON_IMAGE_SIZE,
+                    FLOATING_ICON_IMAGE_SIZE,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
 
         if pixmap:
             self.icon_label.setPixmap(pixmap)
@@ -1715,7 +2074,7 @@ class PickDetector:
         try:
             # Захватываем область портретов героев
             screenshot = ImageGrab.grab(bbox=self.monitor_region)
-            screenshot = screenshot.resize((150, 75), Image.Resampling.LANCZOS)
+            screenshot = screenshot.resize(SCAN_THUMB_SIZE, Image.Resampling.LANCZOS)
             screenshot_gray = screenshot.convert('L')
 
             # ПЕРВЫЙ запуск - сохраняем базу (состояние до пиков)
@@ -1909,7 +2268,7 @@ class CVScanner:
                     continue
 
                 # ОПТИМИЗАЦИЯ: Уменьшаем разрешение (быстрее без потери точности)
-                template_small = cv2.resize(template, (100, 56), interpolation=cv2.INTER_AREA)
+                template_small = cv2.resize(template, SIFT_TEMPLATE_SIZE, interpolation=cv2.INTER_AREA)
 
                 # Вычисляем SIFT дескрипторы
                 kp, des = sift.detectAndCompute(template_small, None)
@@ -2207,6 +2566,11 @@ class TeamSelectionDialog(QDialog):
 
 class MainWindow(QMainWindow):
     old_pos: QPoint | None = None
+    _resizing = False
+    _resize_edges: tuple[bool, bool, bool, bool] | None = None
+    _resize_start_pos: QPoint | None = None
+    _resize_start_geom: QRect | None = None
+    _resize_margin = 8
 
     def _toggle_auto_scan_button(self):
         """Переключатель автосканирования (кнопка)"""
@@ -2260,15 +2624,16 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        apply_ui_scale(calculate_ui_scale())
+
         self._signals = _CacheSignals()
         self._signals.done.connect(self._on_cache_refresh_done)
         self._refresh_in_progress = False
 
-        self.setWindowTitle("MetaMind")
+        self.setWindowTitle(APP_TITLE)
         self.setGeometry(100, 100, 1200, 850)
         self.setMinimumSize(800, 600)
-        # FIX: Добавлен Qt.WindowStaysOnTopHint чтобы окно было поверх игры
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.FramelessWindowHint)
 
         self.setWindowOpacity(0.0)
         self.fade_anim = QPropertyAnimation(self, b"windowOpacity")
@@ -2284,9 +2649,15 @@ class MainWindow(QMainWindow):
         self.hero_data, self.am_counters_data = self.load_data()
         self.all_heroes = sorted(list(self.hero_data.keys()))
         self.selected_enemies = []
+        self.selected_allies = []
         self.selected_role = None
 
         self.opendota_cache = None
+        self.profile_manager = PlayerProfileManager()
+        self.license_manager = LicenseManager()
+        self.meta_provider = MetaDataProvider()
+        self.draft_analyzer = DraftAnalyzer(self.meta_provider)
+        self.recommendation_engine = RecommendationEngine(self.meta_provider)
 
         self.animated_results = []
         self.animation_timer = QTimer(self)
@@ -2347,7 +2718,7 @@ class MainWindow(QMainWindow):
 
         logo_layout.addWidget(self.logo_icon)
 
-        self.logo_label = QLabel("MetaMind")
+        self.logo_label = QLabel(APP_TITLE)
         self.logo_label.setObjectName("LogoText")
         logo_layout.addWidget(self.logo_label)
 
@@ -2401,6 +2772,14 @@ class MainWindow(QMainWindow):
         btn2.clicked.connect(lambda: self.set_page(1))
         sidebar_layout.addWidget(btn2)
 
+        btn3 = QPushButton("PRO Анализ")
+        btn3.setObjectName("SidebarButton")
+        btn3.setMinimumHeight(60)
+        btn3.setMinimumWidth(200)
+        btn3.setCursor(Qt.PointingHandCursor)
+        btn3.clicked.connect(lambda: self.set_page(2))
+        sidebar_layout.addWidget(btn3)
+
         sidebar_layout.addStretch(1)
 
         version_lbl = QLabel(f"v{APP_VERSION}")
@@ -2427,17 +2806,17 @@ class MainWindow(QMainWindow):
         search_block_layout.setContentsMargins(20, 20, 20, 20)
         self.search_block = HeroSearchFrame(self.all_heroes, self.add_enemy, self)
         search_block_layout.addWidget(self.search_block)
-        content_layout.addWidget(self.search_block_container)
+        cv_controls_frame = QFrame()
+        cv_controls_frame.setObjectName("CvControlsCard")
+        cv_controls_frame.setProperty("class", "Card")
+        cv_controls_layout = QHBoxLayout(cv_controls_frame)
+        cv_controls_layout.setContentsMargins(20, 15, 20, 15)
+        cv_controls_layout.setSpacing(10)
 
-        # CV Scanner Controls
-        cv_controls = QHBoxLayout()
-        cv_controls.setSpacing(10)
-
-        from PySide6.QtWidgets import QCheckBox
         self.auto_scan_btn = QPushButton("Автосканирование: ВЫКЛ")
         self.auto_scan_btn.setCheckable(True)
         self.auto_scan_btn.setFixedHeight(45)
-        self.auto_scan_btn.setMinimumWidth(200)
+        self.auto_scan_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.auto_scan_btn.setCursor(Qt.PointingHandCursor)
         self.auto_scan_btn.setStyleSheet("""
             QPushButton {
@@ -2464,9 +2843,7 @@ class MainWindow(QMainWindow):
             }
         """)
         self.auto_scan_btn.clicked.connect(self._toggle_auto_scan_button)
-        cv_controls.addWidget(self.auto_scan_btn)
-
-        content_layout.addLayout(cv_controls)
+        cv_controls_layout.addWidget(self.auto_scan_btn)
 
         # === ТАБЛИЧКА ВЫБОРА КОМАНДЫ ===
         self.team_selector_frame = QFrame()
@@ -2524,7 +2901,6 @@ class MainWindow(QMainWindow):
         team_buttons_layout.addWidget(self.dire_btn)
 
         team_selector_layout.addLayout(team_buttons_layout)
-        content_layout.addWidget(self.team_selector_frame)
 
         self.enemies_container = QFrame()
         self.enemies_container.setObjectName("EnemiesCard")
@@ -2544,8 +2920,6 @@ class MainWindow(QMainWindow):
         self.enemies_list_layout.addStretch(1)
 
         enemies_main_layout.addWidget(self.enemies_list_widget)
-        content_layout.addWidget(self.enemies_container)
-
         self.results_container = QFrame()
         self.results_container.setObjectName("ResultsCard")
         self.results_container.setProperty("class", "Card")
@@ -2570,7 +2944,23 @@ class MainWindow(QMainWindow):
         self.results_scroll_area.setWidget(self.results_scroll_content)
         results_main_layout.addWidget(self.results_scroll_area)
 
-        content_layout.addWidget(self.results_container)
+        content_splitter = QSplitter(Qt.Vertical)
+        content_splitter.setObjectName("ContentSplitter")
+        content_splitter.setHandleWidth(6)
+        content_splitter.setChildrenCollapsible(False)
+        content_splitter.addWidget(self.search_block_container)
+        content_splitter.addWidget(cv_controls_frame)
+        content_splitter.addWidget(self.team_selector_frame)
+        content_splitter.addWidget(self.enemies_container)
+        content_splitter.addWidget(self.results_container)
+        content_splitter.setStretchFactor(0, 1)
+        content_splitter.setStretchFactor(1, 0)
+        content_splitter.setStretchFactor(2, 0)
+        content_splitter.setStretchFactor(3, 1)
+        content_splitter.setStretchFactor(4, 3)
+
+        content_layout.addWidget(content_splitter)
+
         self.stack.addWidget(content_frame)
 
         # === Page 2 ===
@@ -2637,7 +3027,6 @@ class MainWindow(QMainWindow):
 
         roles_container_layout.addLayout(top_row)
         roles_container_layout.addLayout(bottom_row)
-        picker_layout.addWidget(roles_container)
 
         self.picker_results_container = QFrame()
         self.picker_results_container.setProperty("class", "Card")
@@ -2662,7 +3051,16 @@ class MainWindow(QMainWindow):
         self.picker_results_scroll.setWidget(self.picker_results_content)
         picker_results_layout.addWidget(self.picker_results_scroll, stretch=1)
 
-        picker_layout.addWidget(self.picker_results_container, stretch=1)
+        picker_splitter = QSplitter(Qt.Vertical)
+        picker_splitter.setObjectName("PickerSplitter")
+        picker_splitter.setHandleWidth(6)
+        picker_splitter.setChildrenCollapsible(False)
+        picker_splitter.addWidget(roles_container)
+        picker_splitter.addWidget(self.picker_results_container)
+        picker_splitter.setStretchFactor(0, 1)
+        picker_splitter.setStretchFactor(1, 2)
+
+        picker_layout.addWidget(picker_splitter, stretch=1)
 
         bottom_panel = QHBoxLayout()
         bottom_panel.setContentsMargins(0, 10, 0, 0)
@@ -2682,6 +3080,211 @@ class MainWindow(QMainWindow):
         picker_layout.addLayout(bottom_panel)
 
         self.stack.addWidget(picker_frame)
+
+        # === Page 3 (PRO) ===
+        pro_frame = QFrame()
+        pro_frame.setObjectName("ProFrame")
+        pro_layout = QHBoxLayout(pro_frame)
+        pro_layout.setContentsMargins(30, 40, 30, 40)
+        pro_layout.setSpacing(20)
+
+        pro_nav = QFrame()
+        pro_nav.setProperty("class", "Card")
+        pro_nav_layout = QVBoxLayout(pro_nav)
+        pro_nav_layout.setContentsMargins(20, 20, 20, 20)
+        pro_nav_layout.setSpacing(10)
+
+        pro_nav_title = QLabel("MetaMind PRO")
+        pro_nav_title.setStyleSheet(f"color: {COLOR_TEXT_WHITE}; font-size: 18px; font-weight: bold;")
+        pro_nav_layout.addWidget(pro_nav_title)
+
+        self.pro_nav_profile = QPushButton("Профиль")
+        self.pro_nav_license = QPushButton("Лицензия")
+        self.pro_nav_picks = QPushButton("Пики")
+        self.pro_nav_analysis = QPushButton("Анализ")
+        self.pro_nav_recommend = QPushButton("Рекомендации")
+
+        for btn in (
+            self.pro_nav_profile,
+            self.pro_nav_license,
+            self.pro_nav_picks,
+            self.pro_nav_analysis,
+            self.pro_nav_recommend,
+        ):
+            btn.setObjectName("SidebarButton")
+            btn.setMinimumHeight(45)
+            pro_nav_layout.addWidget(btn)
+
+        pro_nav_layout.addStretch(1)
+        pro_layout.addWidget(pro_nav, stretch=0)
+
+        pro_content = QFrame()
+        pro_content_layout = QVBoxLayout(pro_content)
+        pro_content_layout.setContentsMargins(0, 0, 0, 0)
+        pro_content_layout.setSpacing(15)
+
+        pro_header = QLabel("MetaMind PRO — Анализ драфта")
+        pro_header.setStyleSheet(f"color: {COLOR_TEXT_WHITE}; font-size: 20px; font-weight: bold;")
+        pro_content_layout.addWidget(pro_header)
+
+        self.pro_stack = QStackedWidget()
+        pro_content_layout.addWidget(self.pro_stack, stretch=1)
+
+        # Profile page
+        profile_page = QFrame()
+        profile_page.setProperty("class", "Card")
+        profile_layout = QVBoxLayout(profile_page)
+        profile_layout.setContentsMargins(20, 20, 20, 20)
+        profile_layout.setSpacing(12)
+
+        profile_title = QLabel("Профиль игрока")
+        profile_title.setObjectName("TitleLabel")
+        profile_layout.addWidget(profile_title)
+
+        role_row = QHBoxLayout()
+        role_label = QLabel("Роль:")
+        self.profile_role_combo = QComboBox()
+        self.profile_role_combo.addItems(list(HERO_ROLES.keys()))
+        role_row.addWidget(role_label)
+        role_row.addWidget(self.profile_role_combo, stretch=1)
+        profile_layout.addLayout(role_row)
+
+        playstyle_row = QHBoxLayout()
+        playstyle_label = QLabel("Стиль:")
+        self.profile_playstyle_combo = QComboBox()
+        self.profile_playstyle_combo.addItems([
+            "Сбалансированный",
+            "Агрессивный",
+            "Сейвовый",
+            "Фарм-ориентированный",
+        ])
+        playstyle_row.addWidget(playstyle_label)
+        playstyle_row.addWidget(self.profile_playstyle_combo, stretch=1)
+        profile_layout.addLayout(playstyle_row)
+        self.pro_stack.addWidget(profile_page)
+
+        # License page
+        license_page = QFrame()
+        license_page.setProperty("class", "Card")
+        license_layout = QVBoxLayout(license_page)
+        license_layout.setContentsMargins(20, 20, 20, 20)
+        license_layout.setSpacing(12)
+
+        license_title = QLabel("Лицензия PRO")
+        license_title.setObjectName("TitleLabel")
+        license_layout.addWidget(license_title)
+
+        self.license_status_label = QLabel("")
+        self.license_status_label.setStyleSheet(f"color: {COLOR_TEXT_GRAY}; font-size: 13px;")
+        license_layout.addWidget(self.license_status_label)
+
+        license_row = QHBoxLayout()
+        self.license_input = QLineEdit()
+        self.license_input.setPlaceholderText("Введите ключ активации")
+        self.license_activate_btn = QPushButton("Активировать")
+        self.license_activate_btn.clicked.connect(self._activate_license)
+        license_row.addWidget(self.license_input, stretch=1)
+        license_row.addWidget(self.license_activate_btn)
+        license_layout.addLayout(license_row)
+        self.pro_stack.addWidget(license_page)
+
+        # Picks page
+        picks_page = QFrame()
+        picks_layout = QHBoxLayout(picks_page)
+        picks_layout.setContentsMargins(0, 0, 0, 0)
+        picks_layout.setSpacing(15)
+
+        ally_card = QFrame()
+        ally_card.setProperty("class", "Card")
+        ally_layout = QVBoxLayout(ally_card)
+        ally_layout.setContentsMargins(20, 20, 20, 20)
+        ally_layout.setSpacing(12)
+
+        ally_title = QLabel("Ваши герои")
+        ally_title.setObjectName("TitleLabel")
+        ally_layout.addWidget(ally_title)
+
+        self.pro_ally_search = ProHeroSearchFrame("Добавить героя", self.all_heroes, self.add_ally, self)
+        ally_layout.addWidget(self.pro_ally_search)
+
+        self.allies_list_container = QWidget()
+        self.allies_list_layout = QHBoxLayout(self.allies_list_container)
+        self.allies_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.allies_list_layout.setSpacing(10)
+        self.allies_list_layout.addStretch(1)
+        ally_layout.addWidget(self.allies_list_container)
+        picks_layout.addWidget(ally_card, stretch=1)
+
+        enemy_card = QFrame()
+        enemy_card.setProperty("class", "Card")
+        enemy_layout = QVBoxLayout(enemy_card)
+        enemy_layout.setContentsMargins(20, 20, 20, 20)
+        enemy_layout.setSpacing(12)
+
+        enemy_title = QLabel("Герои противника")
+        enemy_title.setObjectName("TitleLabel")
+        enemy_layout.addWidget(enemy_title)
+
+        self.enemy_summary_label = QLabel("Пока нет данных")
+        self.enemy_summary_label.setStyleSheet(f"color: {COLOR_TEXT_GRAY}; font-size: 13px;")
+        enemy_layout.addWidget(self.enemy_summary_label)
+        picks_layout.addWidget(enemy_card, stretch=1)
+        self.pro_stack.addWidget(picks_page)
+
+        # Analysis page
+        analysis_page = QFrame()
+        analysis_layout = QHBoxLayout(analysis_page)
+        analysis_layout.setContentsMargins(0, 0, 0, 0)
+        analysis_layout.setSpacing(15)
+
+        draft_card = QFrame()
+        draft_card.setProperty("class", "Card")
+        draft_layout = QVBoxLayout(draft_card)
+        draft_layout.setContentsMargins(20, 20, 20, 20)
+        draft_layout.setSpacing(12)
+        draft_title = QLabel("Состояние драфта")
+        draft_title.setObjectName("TitleLabel")
+        draft_layout.addWidget(draft_title)
+        self.draft_state_label = QLabel("Заполните пики и роль для анализа.")
+        self.draft_state_label.setWordWrap(True)
+        draft_layout.addWidget(self.draft_state_label)
+        analysis_layout.addWidget(draft_card, stretch=1)
+
+        issues_card = QFrame()
+        issues_card.setProperty("class", "Card")
+        issues_layout = QVBoxLayout(issues_card)
+        issues_layout.setContentsMargins(20, 20, 20, 20)
+        issues_layout.setSpacing(8)
+        issues_title = QLabel("Проблемы команды")
+        issues_title.setObjectName("TitleLabel")
+        issues_layout.addWidget(issues_title)
+        self.issues_container = QWidget()
+        self.issues_layout = QVBoxLayout(self.issues_container)
+        self.issues_layout.setContentsMargins(0, 0, 0, 0)
+        self.issues_layout.setSpacing(6)
+        issues_layout.addWidget(self.issues_container)
+        analysis_layout.addWidget(issues_card, stretch=1)
+        self.pro_stack.addWidget(analysis_page)
+
+        # Recommendations page
+        rec_page = QFrame()
+        rec_page.setProperty("class", "Card")
+        rec_layout = QVBoxLayout(rec_page)
+        rec_layout.setContentsMargins(20, 20, 20, 20)
+        rec_layout.setSpacing(10)
+        rec_title = QLabel("Рекомендации под вашу роль")
+        rec_title.setObjectName("TitleLabel")
+        rec_layout.addWidget(rec_title)
+        self.recommendations_container = QWidget()
+        self.recommendations_layout = QVBoxLayout(self.recommendations_container)
+        self.recommendations_layout.setContentsMargins(0, 0, 0, 0)
+        self.recommendations_layout.setSpacing(8)
+        rec_layout.addWidget(self.recommendations_container)
+        self.pro_stack.addWidget(rec_page)
+
+        self.pro_stack.setCurrentIndex(2)
+        pro_layout.addWidget(pro_content, stretch=1)
+        self.stack.addWidget(pro_frame)
 
         self.render_enemies()
         self.calculate_counters()
@@ -2710,6 +3313,26 @@ class MainWindow(QMainWindow):
 
         # Инициализируем CV сканер
         self.setup_cv_scanner()
+
+        size_grip = QSizeGrip(central_widget)
+        size_grip.setObjectName("WindowSizeGrip")
+        size_grip.setFixedSize(16, 16)
+        root_layout.addWidget(size_grip, alignment=Qt.AlignRight | Qt.AlignBottom)
+
+        profile = self.profile_manager.get_profile()
+        self.profile_role_combo.setCurrentText(profile["role"])
+        self.profile_playstyle_combo.setCurrentText(profile["playstyle"])
+        self.profile_role_combo.currentTextChanged.connect(self._on_profile_changed)
+        self.profile_playstyle_combo.currentTextChanged.connect(self._on_profile_changed)
+        self._refresh_license_status()
+        self.render_allies()
+        self.update_pro_analysis()
+
+        self.pro_nav_profile.clicked.connect(lambda: self._set_pro_section(0))
+        self.pro_nav_license.clicked.connect(lambda: self._set_pro_section(1))
+        self.pro_nav_picks.clicked.connect(lambda: self._set_pro_section(2))
+        self.pro_nav_analysis.clicked.connect(lambda: self._set_pro_section(3))
+        self.pro_nav_recommend.clicked.connect(lambda: self._set_pro_section(4))
 
     def _start_cache_refresh(self, force: bool = False, reason: str = ""):
         if self._refresh_in_progress:
@@ -2780,12 +3403,16 @@ class MainWindow(QMainWindow):
         self.sidebar_anim.start()
         self.sidebar_expanded = not self.sidebar_expanded
 
+
     def set_page(self, index: int):
         self.stack.setCurrentIndex(index)
         if self.sidebar_expanded:
             self.toggle_sidebar()
         if index == 1:
             self._start_cache_refresh(force=False, reason="open-meta")
+        if index == 2:
+            self.update_pro_analysis()
+            self._set_pro_section(self.pro_stack.currentIndex())
 
     def start_fade_out(self):
         self.fade_anim.stop()
@@ -2800,11 +3427,24 @@ class MainWindow(QMainWindow):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton:
+            edges = self._get_resize_edges(event.position().toPoint())
+            if any(edges):
+                self._resizing = True
+                self._resize_edges = edges
+                self._resize_start_pos = event.globalPosition().toPoint()
+                self._resize_start_geom = self.geometry()
+                event.accept()
+                return
             self.old_pos = event.globalPosition().toPoint()
             event.accept()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
+        if self._resizing and self._resize_start_geom and self._resize_start_pos:
+            self._resize_window(event.globalPosition().toPoint())
+            event.accept()
+            return
+        self._update_cursor(event.position().toPoint())
         if event.buttons() == Qt.LeftButton and self.old_pos is not None:
             delta = event.globalPosition().toPoint() - self.old_pos
             self.move(self.pos() + delta)
@@ -2814,9 +3454,60 @@ class MainWindow(QMainWindow):
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton:
+            if self._resizing:
+                self._resizing = False
+                self._resize_edges = None
+                self._resize_start_pos = None
+                self._resize_start_geom = None
             self.old_pos = None
             event.accept()
         super().mouseReleaseEvent(event)
+
+    def _get_resize_edges(self, pos: QPoint) -> tuple[bool, bool, bool, bool]:
+        rect = self.rect()
+        left = pos.x() <= self._resize_margin
+        right = pos.x() >= rect.width() - self._resize_margin
+        top = pos.y() <= self._resize_margin
+        bottom = pos.y() >= rect.height() - self._resize_margin
+        return left, right, top, bottom
+
+    def _update_cursor(self, pos: QPoint):
+        if self._resizing:
+            return
+        left, right, top, bottom = self._get_resize_edges(pos)
+        if (left and top) or (right and bottom):
+            self.setCursor(Qt.SizeFDiagCursor)
+        elif (right and top) or (left and bottom):
+            self.setCursor(Qt.SizeBDiagCursor)
+        elif left or right:
+            self.setCursor(Qt.SizeHorCursor)
+        elif top or bottom:
+            self.setCursor(Qt.SizeVerCursor)
+        else:
+            self.setCursor(Qt.ArrowCursor)
+
+    def _resize_window(self, global_pos: QPoint):
+        if not self._resize_edges or not self._resize_start_geom or not self._resize_start_pos:
+            return
+        left, right, top, bottom = self._resize_edges
+        dx = global_pos.x() - self._resize_start_pos.x()
+        dy = global_pos.y() - self._resize_start_pos.y()
+        geom = QRect(self._resize_start_geom)
+
+        if left:
+            new_left = geom.left() + dx
+            max_left = geom.right() - self.minimumWidth()
+            geom.setLeft(min(new_left, max_left))
+        if right:
+            geom.setRight(max(geom.right() + dx, geom.left() + self.minimumWidth()))
+        if top:
+            new_top = geom.top() + dy
+            max_top = geom.bottom() - self.minimumHeight()
+            geom.setTop(min(new_top, max_top))
+        if bottom:
+            geom.setBottom(max(geom.bottom() + dy, geom.top() + self.minimumHeight()))
+
+        self.setGeometry(geom)
 
     def on_role_selected(self, role_key):
         self.selected_role = role_key
@@ -3431,7 +4122,7 @@ class MainWindow(QMainWindow):
             try:
                 # Захватываем текущее состояние для следующего пика
                 screenshot = ImageGrab.grab(bbox=self.pick_detector.monitor_region)
-                screenshot = screenshot.resize((150, 75), Image.Resampling.LANCZOS)
+                screenshot = screenshot.resize(SCAN_THUMB_SIZE, Image.Resampling.LANCZOS)
                 screenshot_gray = screenshot.convert('L')
 
                 self.pick_detector.last_screenshot = screenshot_gray
@@ -3644,17 +4335,95 @@ class MainWindow(QMainWindow):
             self.selected_enemies.append(hero_slug)
             self.render_enemies()
             self.calculate_counters()
+            self.update_pro_analysis()
 
     def remove_enemy(self, hero_slug):
         if hero_slug in self.selected_enemies:
             self.selected_enemies.remove(hero_slug)
             self.render_enemies()
             self.calculate_counters()
+            self.update_pro_analysis()
 
     def clear_enemies(self):
         self.selected_enemies = []
         self.render_enemies()
         self.calculate_counters()
+        self.update_pro_analysis()
+
+    def add_ally(self, hero_slug):
+        if hero_slug in self.all_heroes and len(self.selected_allies) < MAX_ALLIES and hero_slug not in self.selected_allies:
+            self.selected_allies.append(hero_slug)
+            self.render_allies()
+            self.update_pro_analysis()
+
+    def remove_ally(self, hero_slug):
+        if hero_slug in self.selected_allies:
+            self.selected_allies.remove(hero_slug)
+            self.render_allies()
+            self.update_pro_analysis()
+
+    def clear_allies(self):
+        self.selected_allies = []
+        self.render_allies()
+        self.update_pro_analysis()
+
+    def render_allies(self):
+        if not hasattr(self, "allies_list_layout"):
+            return
+        for i in reversed(range(self.allies_list_layout.count())):
+            item = self.allies_list_layout.itemAt(i)
+            if item.widget() and item.widget().objectName() != "":
+                item.widget().deleteLater()
+            elif item.widget() is None:
+                self.allies_list_layout.removeItem(item)
+
+        for hero in self.selected_allies:
+            hero_name = hero.replace("-", " ").title()
+            card = QFrame()
+            card.setObjectName("EnemyCard")
+            card.setMinimumHeight(30)
+            card_layout = QHBoxLayout(card)
+            card_layout.setContentsMargins(5, 3, 0, 3)
+            card_layout.setSpacing(6)
+
+            name_lbl = QLabel(hero_name)
+            name_lbl.setStyleSheet(f"color: {COLOR_TEXT_WHITE}; font-size: 12px;")
+            card_layout.addWidget(name_lbl)
+
+            remove_btn = QPushButton("✕")
+            remove_btn.setObjectName("RemoveButton")
+            remove_btn.clicked.connect(lambda checked=False, h=hero: self.remove_ally(h))
+            card_layout.addWidget(remove_btn)
+
+            self.allies_list_layout.insertWidget(self.allies_list_layout.count() - 1, card)
+
+    def _on_profile_changed(self):
+        role = self.profile_role_combo.currentText()
+        playstyle = self.profile_playstyle_combo.currentText()
+        self.profile_manager.update_profile(role, playstyle)
+        self.update_pro_analysis()
+
+    def _activate_license(self):
+        key = self.license_input.text()
+        ok, message = self.license_manager.activate(key)
+        self.license_status_label.setText(message)
+        if ok:
+            self.license_status_label.setStyleSheet(f"color: {COLOR_SUCCESS_GREEN}; font-size: 13px;")
+        else:
+            self.license_status_label.setStyleSheet(f"color: {COLOR_DANGER_RED}; font-size: 13px;")
+
+    def _refresh_license_status(self):
+        ok, message = self.license_manager.status()
+        self.license_status_label.setText(message)
+        if ok:
+            self.license_status_label.setStyleSheet(f"color: {COLOR_SUCCESS_GREEN}; font-size: 13px;")
+        else:
+            self.license_status_label.setStyleSheet(f"color: {COLOR_TEXT_GRAY}; font-size: 13px;")
+
+    def _set_pro_section(self, index: int):
+        if not hasattr(self, "pro_stack"):
+            return
+        self.pro_stack.setCurrentIndex(index)
 
     def create_placeholder_icon_label(self, hero_slug, width, height):
         initial = hero_slug[0].upper() if hero_slug else "?"
@@ -3715,6 +4484,68 @@ class MainWindow(QMainWindow):
 
         if self.enemies_list_layout.itemAt(self.enemies_list_layout.count() - 1) is None:
             self.enemies_list_layout.addStretch(1)
+
+    def update_pro_analysis(self):
+        if not hasattr(self, "draft_state_label"):
+            return
+        role = self.profile_role_combo.currentText() if hasattr(self, "profile_role_combo") else "Carry"
+        ally_count = len(self.selected_allies)
+        enemy_count = len(self.selected_enemies)
+        enemy_names = [e.replace("-", " ").title() for e in self.selected_enemies]
+        self.enemy_summary_label.setText(
+            f"Враги: {enemy_count}/{MAX_ENEMIES} ({', '.join(enemy_names) or 'нет'})"
+        )
+        self.draft_state_label.setText(
+            f"Ваши герои: {ally_count}/{MAX_ALLIES}. Роль: {role}. "
+            f"Противники: {enemy_count}/{MAX_ENEMIES}."
+        )
+
+        analysis = self.draft_analyzer.analyze(self.selected_allies, self.selected_enemies)
+        flags = analysis.get("flags", [])
+
+        while self.issues_layout.count() > 0:
+            item = self.issues_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            del item
+
+        for flag in flags:
+            lbl = QLabel(f"• {flag}")
+            lbl.setStyleSheet(f"color: {COLOR_TEXT_WHITE}; font-size: 13px;")
+            lbl.setWordWrap(True)
+            self.issues_layout.addWidget(lbl)
+
+        while self.recommendations_layout.count() > 0:
+            item = self.recommendations_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            del item
+
+        recommendations = self.recommendation_engine.recommend(
+            role, self.selected_allies, self.selected_enemies, flags
+        )
+        if not recommendations:
+            empty_lbl = QLabel("Недостаточно данных для рекомендаций.")
+            empty_lbl.setStyleSheet(f"color: {COLOR_TEXT_GRAY}; font-size: 13px;")
+            self.recommendations_layout.addWidget(empty_lbl)
+            return
+
+        for rec in recommendations:
+            hero_name = rec["hero"].replace("-", " ").title()
+            row = QFrame()
+            row.setProperty("class", "Card")
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(12, 8, 12, 8)
+            row_layout.setSpacing(8)
+            name_lbl = QLabel(hero_name)
+            name_lbl.setStyleSheet(f"color: {COLOR_TEXT_WHITE}; font-size: 14px; font-weight: bold;")
+            reason_lbl = QLabel(rec["reason"])
+            reason_lbl.setStyleSheet(f"color: {COLOR_TEXT_GRAY}; font-size: 12px;")
+            reason_lbl.setWordWrap(True)
+            row_layout.addWidget(name_lbl)
+            row_layout.addStretch(1)
+            row_layout.addWidget(reason_lbl)
+            self.recommendations_layout.addWidget(row)
 
     def calculate_counters(self):
         self.animation_timer.stop()
@@ -3934,10 +4765,11 @@ class MainWindow(QMainWindow):
 
             QListWidget {{
                 background-color: {COLOR_GLASS_MEDIUM};
-                border: 1px solid {COLOR_ACCENT};
+                border: none;
                 border-radius: 4px;
                 color: {COLOR_TEXT_WHITE};
                 font-size: 13px;
+                padding-bottom: 2px;
                 outline: 0; 
             }}
             QListWidget::item:hover {{
@@ -4000,6 +4832,7 @@ class MainWindow(QMainWindow):
             QPushButton#WindowControlButton:hover {{
                 background-color: rgba(85, 85, 85, 0.7);
             }}
+
 
             QPushButton#CloseWindowButton {{
                 background-color: transparent;
@@ -4089,6 +4922,27 @@ class MainWindow(QMainWindow):
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
                 background: none;
             }}
+
+            QSplitter::handle {{
+                background-color: rgba(255, 255, 255, 0.08);
+                border-radius: 3px;
+            }}
+            QSplitter::handle:hover {{
+                background-color: rgba(220, 38, 38, 0.35);
+            }}
+            QSplitter::handle:vertical {{
+                margin: 6px 0;
+                height: 6px;
+            }}
+            QSplitter::handle:horizontal {{
+                margin: 0 6px;
+                width: 6px;
+            }}
+            QSizeGrip {{
+                width: 16px;
+                height: 16px;
+                background: transparent;
+            }}
         """
 
 
@@ -4112,7 +4966,7 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     if sys.platform == 'win32':
         try:
-            myappid = f'metamind.dota2.counterpick.v{APP_VERSION}'
+            myappid = f'metamind.pro.v{APP_VERSION}'
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
         except Exception:
             pass
@@ -4129,20 +4983,14 @@ if __name__ == "__main__":
     print("[MAIN] ✅ GSI сервер запущен в фоне")
 
     main_window = None
-    floating_icon = None
 
 
     def on_splash_loaded(opendota_data):
-        global main_window, floating_icon
+        global main_window
         main_window = MainWindow()
         if opendota_data:
             main_window.opendota_cache = opendota_data
         main_window.show()
-
-        floating_icon = FloatingIcon(main_window)
-        floating_icon.show()
-
-        app.aboutToQuit.connect(lambda: floating_icon.close() if floating_icon else None)
 
 
     splash = SplashScreen(on_splash_loaded)
